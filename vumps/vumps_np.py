@@ -441,15 +441,20 @@ def get_Lh_Rh_mpo(A_L, A_R, C,W):
     L_W[d_w-1] = np.eye(D,D)
     for i in range(d_w-2,-1,-1): # dw-2,dw-3,...,1,0
         for j in range(i+1, d_w): # j>i: i+1,...d_w-1
+            # print(i,j)
             L_W[i] += ncon([L_W[j],get_T_O(A_L, W[j,i])],
                            [[1,2],[-1,-2,1,2]]) # Lw[i] = Lw[j]T[j,i]
     C_r = C.T
+    # exit()
     R = ncon([np.conj(C_r), C_r],
              [[1, -1], [1, -2]])
     e_Lw = ncon([R, L_W[0]], ## eqn (C27) in PRB 97, 045145 (2018)
                      [[1, 2], [1, 2]])
     # print('e_test_Lw = ', e_test_Lw)
+    e_Lw_eye = e_Lw*np.eye(D,D)
+    L_W[0] -= e_Lw_eye
     L_W[0] = sum_right_left(L_W[0], A_L, C_r)
+
     L_W = L_W.transpose([1,0,2])
     R_W = np.zeros([d_w, D,D], dtype=complex)
     R_W[0] = np.eye(D,D)
@@ -458,12 +463,16 @@ def get_Lh_Rh_mpo(A_L, A_R, C,W):
             # print('i=',i,'j=',j)
             R_W[i] += ncon([R_W[j], get_T_O(A_R,W[i,j])],
                         [[1,2], [-1,-2,1,2]]) # Rw[i] = T[i,j]R[j]
+    # exit()
     L = ncon([np.conj(C), C],
              [[1,-1],[1,-2]])
     e_Rw = ncon([L, R_W[d_w-1]], ## eqn (C27) in PRB 97, 045145 (2018)
                       [[1,2],[1,2]])
+    e_Rw_eye = e_Rw * np.eye(D, D)
     # print('e_test_Rw = ', e_test_Rw)
+    R_W[d_w - 1] -= e_Rw_eye
     R_W[d_w-1] = sum_right_left(R_W[d_w-1], A_R, C)
+
     R_W = R_W.transpose([1,0,2])
     # print(e_Rw, e_Lw)
     return L_W, R_W, (e_Lw+e_Rw)/2
@@ -478,6 +487,7 @@ def vumps_mpo(W,A,eta = 1e-8):
     print('VUMPS for MPO begin!')
     def map_Hac(Ac):
         Ac = Ac.reshape(D,d,D)
+        # e_eye = energy* np.eye(d ** 2, d ** 2).reshape(d, d, d, d)
         Ac_new = ncon([L_W,Ac,W,R_W],
                       [[-1,3,1],[1,5,2],[3,4,5,-2],[-3,4,2]])
         return Ac_new.reshape(-1)
@@ -515,9 +525,9 @@ def vumps_mpo(W,A,eta = 1e-8):
             print(50 * '-' + 'steps', count, 50 * '-')
             print('energy = ', e)
             print('delta = ', delta)
-            # print('Eac = ', E_Ac)
-            # print('Ec = ', E_C)
-            # print('Eac/Ec = ', E_Ac/E_C)
+            print('Eac = ', E_Ac)
+            print('Ec = ', E_C)
+            print('Eac/Ec = ', E_Ac/E_C)
         count += 1
     print(50 * '-' + ' final ' + 50 * '-')
     print('energy = ', e)
@@ -531,7 +541,7 @@ Main Program
 '''
 
 if __name__ == '__main__':
-    D = 20;
+    D = 24;
     d = 2
     A = np.random.rand(D, d, D)
     L0 = np.random.randn(D, D)
@@ -544,8 +554,8 @@ if __name__ == '__main__':
     sM = sX - 1j * sY
     # print(sP)
     # exit()
-    model = 'TFIM'
-    hz_field = 0.9
+    model = 'XXZ'
+    hz_field = 1.2
     print('We are solving '+model+' model!')
     print('D = ', D)
     if model == 'XX':
@@ -580,21 +590,21 @@ if __name__ == '__main__':
         ## Ref: "Study of the ground state of the one-dimensionalHeisenberg spin-1 chain 2"; Author: K.R. de Ruiter
         # delta        0.        0.25      0.50      0.75      1.
         # E_infty/LJ  -0.318310 -0.345180 -0.375000 -0.407659 -0.443147
-        delta = 0.75
+        delta = 1.0
         E_XXZ = {0.:-0.318310, 0.25: -0.345180, -0.50:-0.375000, 0.75:-0.407659, 1.:  -0.443147}
         print('delta = ', delta)
-        hloc = np.real(np.kron(sX, sX) +np.kron(sY,sY) +delta*np.kron(sZ,sZ)).reshape(2, 2, 2, 2)/4
+        hloc = np.real(np.kron(sX, sX) +np.kron(sY,sY) +delta*np.kron(sZ,sZ)).reshape(2, 2, 2, 2)
         d_w = 5
         W = np.zeros([d_w, d_w, d, d], dtype=complex)
         W[0, 0] = W[4, 4] = sI
         W[1, 0] = W[4,1] = sX
         W[2, 0] = W[4,2] = sY
         W[3, 0] = sZ; W[4,3] = delta*sZ
-        W = W/4
-        Exact = E_XXZ[delta]
+        # W = W
+        Exact = E_XXZ[delta]*4
     print('Exact = ', Exact)
 
-    vumps_2sites(hloc, A, eta=1e-7)
+    vumps_2sites(hloc, A, eta=1e-8)
     vumps_mpo(W,A, eta=1e-8)
     # print('Exact = ', Exact)
     exit()
