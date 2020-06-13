@@ -1,10 +1,11 @@
 from ncon import ncon
 import numpy as np
-from numpy import linalg
+from scipy import linalg
 from scipy.sparse.linalg import eigs
+from scipy.sparse.linalg import eigsh
 from scipy.sparse.linalg import LinearOperator
 from scipy.sparse.linalg import bicgstab
-
+import matplotlib.pyplot as plt
 import copy
 
 
@@ -20,15 +21,16 @@ Index Ordering Convention
  L          R       0--C--1         |           |            |
  |          |                   2--A_L--0   0--A_R--2        3
  ---0    0---
-Three sections:
-1.Algorithm that will be used for both 2sites and MPO
+Four sections:
+1.Functions that will be used for both 2sites and MPO
 2.Functions only for 2sites VUMPS
 3.Functions only for MPO VUMPS
+4.Excitation: Seems to have something wrong
 '''
 
 '''
 ########################################################################################################################
-Section 1 Algorithm that will be used for both 2sites and MPO
+Section 1 Functions that will be used for both 2sites and MPO
 Contain three parts:
 1.Change uMPS to canonical form.
 2.Find {A_L, A_R} from a given {Ac, C} 
@@ -277,7 +279,7 @@ Ref: PRB 97, 045145 (2018) Appendix D
 #################################################
 '''
 def sum_right_left(x, A_R, C, tol=1e-8):
-    def map(y_R): ## eqn(D13) in PRB 97, 045145 (2018)
+    def map_y(y_R): ## eqn(D13) in PRB 97, 045145 (2018)
         y_R = y_R.reshape(D,D)
         term1 = y_R
         term2 = ncon([y_R,A_R,np.conj(A_R)],
@@ -290,7 +292,7 @@ def sum_right_left(x, A_R, C, tol=1e-8):
              [[1,-1],[1,-2]]) # = C@np.conj(C.T)
     x_tilda = x - ncon([x,L],
                        [[1,2],[1,2]])
-    y_R, info = bicgstab(LinearOperator((D ** 2, D ** 2), matvec=map), x_tilda.reshape(-1),x0=x_tilda.reshape(-1), tol=tol)
+    y_R, info = bicgstab(LinearOperator((D ** 2, D ** 2), matvec=map_y), x_tilda.reshape(-1),x0=x_tilda.reshape(-1), tol=tol)
     y_R = y_R.reshape(D,D)
     if info != 0:
         print('bicgstab did not converge')
@@ -328,12 +330,12 @@ Get h_L and h_R (will be used as the input of sum_right_left)
 ##########################################################
 '''
 
-def get_h_L(A_L, h): ## eqn(133) in arXiv:1810.07006v3
+def Al_h_to_hL(A_L, h): ## eqn(133) in arXiv:1810.07006v3
     h_L = ncon([A_L,A_L,h,np.conj(A_L), np.conj(A_L)],
               [[1,3,2],[2,4,-2],[3,4,5,6],[1,5,7],[7,6,-1]])
     return h_L
 
-def get_h_R(A_R,h): ## eqn(133) in arXiv:1810.07006v3
+def Ar_h_to_h_R(A_R, h): ## eqn(133) in arXiv:1810.07006v3
     h_R = ncon([A_R, A_R, h, np.conj(A_R), np.conj(A_R)],
                [[2,3,-2],[1,4,2],[3,4,5,6],[7,5,-1],[1,6,7]])
     return h_R
@@ -347,6 +349,7 @@ Ref: Algorithm 4 in arXiv:1810.07006v3
 ############################################################
 '''
 def vumps_2sites(h, A, eta=1e-7):
+    print('>' * 100)
     print('VUMPS for two sites begin!')
     def map_Hac(Ac): ## eqn(131) in arXiv:1810.07006v3
         Ac = Ac.reshape(D,d,D)
@@ -385,11 +388,11 @@ def vumps_2sites(h, A, eta=1e-7):
         e_eye = e * np.eye(d ** 2, d ** 2).reshape(d, d, d, d)
         h_tilda = h - e_eye
         # h_tilda = h
-        h_L = get_h_L(A_L, h_tilda)
+        h_L = Al_h_to_hL(A_L, h_tilda)
         # L_h = sum_left(h_L, A_L, C,tol=delta/10)
         C_r = C.T
         L_h = sum_right_left(h_L, A_L, C_r, tol=delta / 10)
-        h_R = get_h_R(A_R, h_tilda)
+        h_R = Ar_h_to_h_R(A_R, h_tilda)
         R_h = sum_right_left(h_R, A_R, C, tol=delta / 10)
         # print(Ac.shape)
         E_Ac, Ac = eigs(LinearOperator((D ** 2*d, D ** 2*d), matvec=map_Hac), k=1, which='SR',
@@ -430,7 +433,7 @@ which means W[a,a] = 0 except for W[0,0] and W[d_w-1,d_w-1]
 Ref: Algorithm 6 in PRB 97, 045145 (2018)
 ##########################################################
 '''
-def get_T_O(A_L, O):
+def Al_O_to_T_O(A_L, O):
     T_O = ncon([A_L, O, np.conj(A_L)],
                [[-4,1,-2], [1,2],[-3,2,-1]])
     return T_O
@@ -442,7 +445,7 @@ def get_Lh_Rh_mpo(A_L, A_R, C,W):
     for i in range(d_w-2,-1,-1): # dw-2,dw-3,...,1,0
         for j in range(i+1, d_w): # j>i: i+1,...d_w-1
             # print(i,j)
-            L_W[i] += ncon([L_W[j],get_T_O(A_L, W[j,i])],
+            L_W[i] += ncon([L_W[j], Al_O_to_T_O(A_L, W[j, i])],
                            [[1,2],[-1,-2,1,2]]) # Lw[i] = Lw[j]T[j,i]
     C_r = C.T
     # exit()
@@ -461,8 +464,8 @@ def get_Lh_Rh_mpo(A_L, A_R, C,W):
     for i in range (1,d_w): # 1,2,...,dw-1
         for j in range(i-1,-1,-1): # j<i: i-1,i-2,...,0
             # print('i=',i,'j=',j)
-            R_W[i] += ncon([R_W[j], get_T_O(A_R,W[i,j])],
-                        [[1,2], [-1,-2,1,2]]) # Rw[i] = T[i,j]R[j]
+            R_W[i] += ncon([R_W[j], Al_O_to_T_O(A_R, W[i, j])],
+                           [[1,2], [-1,-2,1,2]]) # Rw[i] = T[i,j]R[j]
     # exit()
     L = ncon([np.conj(C), C],
              [[1,-1],[1,-2]])
@@ -484,6 +487,7 @@ Ref: Hao-Ti Hung's thesis p.26
 ##############################################################
 '''
 def vumps_mpo(W,A,eta = 1e-8):
+    print('>'*100)
     print('VUMPS for MPO begin!')
     def map_Hac(Ac):
         Ac = Ac.reshape(D,d,D)
@@ -533,7 +537,172 @@ def vumps_mpo(W,A,eta = 1e-8):
     print('energy = ', e)
     energy_error = abs((e-Exact)/Exact)
     print('Error', energy_error)
+    return Ac, C, A_L, A_R, L_W, R_W
+'''
+########################################################################################################################
+Excitation Part
+########################################################################################################################
+'''
+def A_W_to_Tw(A_L, W):
+    '''Get T_Wl or T_Wr, which is only used in [quasiparticle_typo]
+    See eqn(265,266) in arXiv:1810.07006v3'''
+    T_W = ncon([A_L, W, np.conj(A_L)],
+                [[-6,1,-3], [-5,-2,1,2], [-4,2,-1]])
+    return T_W
+def get_T_RL_or_T_LR(A_R,W,A_L):
+    '''Thie is ued in [quasiparticle_correct], which should be the correct transfer
+    matrix to be used'''
+    T_RL = ncon([A_R,W,np.conj(A_L)],
+                [[-3,2,-6],[-5,-2,2,1], [-4,1,-1]])
+    return T_RL
+def Tw_to_rl(T_W):
+    '''
+    :param T_W: transder matrix with MPO
+    :return: left and right dominant eigenvectors of T_W
+    Note: If T_W = T_Wr, then l<->r
+    '''
+    # print('doing get_rl')
+    def map_r(r):
+        '''If T_W = T_Wr, then it is map_l, for <l|T_Wr = <l|'''
+        r = r.reshape(D,d_w,D)
+        r_out = ncon([r, T_W],
+                     [[1,2,3], [1,2,3,-1,-2,-3]])
+        return r_out.reshape(-1)
+    def map_l(l):
+        '''If T_W = T_Wr, then it is map_r, for T_Wr|r> = |r>'''
+        l = l.reshape(D,d_w,D)
+        l_out = ncon([T_W,l],
+                     [[-1,-2,-3,1,2,3], [1,2,3]])
+        return l_out.reshape(-1)
+    D,d_w = T_W.shape[0], T_W.shape[1]
+    l_val, l = eigs(LinearOperator((D**2*d_w, D**2*d_w), matvec=map_l), k=1, which='LM')
+    l = l.reshape(D,d_w,D)
+    r_val, r = eigs(LinearOperator((D**2*d_w, D**2*d_w), matvec=map_r), k=1, which='LM')
+    r = r.reshape(D,d_w,D)
+    print('norm(l_val) = ', linalg.norm(l_val), 'norm(r_val) = ', linalg.norm(r_val))
+    # print(l_val, r_val)
+    # exit()
+    return r, l
+def quasi_sum_right_left(T_W, r, l, x):
+    '''
+    Use (1-T_W)|y> = |x> with pseudo inverse to solve y
+    :param T_W: transder matrix with MPO
+    :param r: right dominant vector (If T_W = T_Wr, then it is l)
+    :param l: left dominant vector (If T_W = T_Wr, then it is r)
+    :param x: tensor on which infinite sum we want to apply
+    :return: y
+    '''
+    # print('doing quasi_sum_right_left')
+    def trans_map(y):
+        y = y.reshape(D,d_w,D)
+        term1 = y
+        term2 = ncon([T_W, y],
+                     [[-1,-2,-3,1,2,3], [1,2,3]])
+        term3 = ncon([r,y],
+                     [[1,2,3], [1,2,3]])*l
+        y_out = term1 + term2 + term3
+        return y_out.reshape(-1)
+    D,d_w,_ = x.shape
+    x_tilda = x - ncon([x,r],[[1,2,3],[1,2,3]])*l
+    y, info = bicgstab(LinearOperator((D**2*d_w, D**2*d_w), matvec=trans_map), x_tilda.reshape(-1), x0=x_tilda.reshape(-1))
+    y = y.reshape(D,d_w,D)
+    if info != 0:
+        print('bicgstab did not converge!')
+        exit()
+    return y
 
+def combine_LBWA_L(L_W, B, W, A_L):
+    LBWA_L = ncon([L_W, B, W, np.conj(A_L)],
+               [[1,2,3],[3,5,-3],[2,-2,5,4],[1,4,-1]])
+    return LBWA_L
+
+def combine_RBWA_R(R_W, B, W, A_R):
+    RBWA_R = ncon([R_W,B,W,np.conj(A_R)],
+                  [[1,2,3],[-3,5,3],[-2,2,5,4],[1,4,-1]])
+    return RBWA_R
+
+def quasiparticle_correct(W, p, Ac, A_L, A_R, L_W, R_W):
+    '''
+    Corrected version of quasiparticle. Only difference is we use {T_RL, T_LR}
+    :param W: MPO
+    :param p: momentum
+    :param Ac: Only used in evaluating H_eff
+    :param A_L: Used to get mpo transfer matrix and LBWA_L
+    :param A_R: Used to get mpo transfer matrix and RBWA_R
+    :param L_W: Left fixed point of MPO, which is obtained from vumps_mpo.
+    :param R_W: Right fixed point of MPO, which is obtained from vumps_mpo.
+    :return: omega and X
+    '''
+    T_RL = get_T_RL_or_T_LR(A_R, W, A_L)
+    W_r = W.transpose([1, 0, 2, 3])
+    T_LR = get_T_RL_or_T_LR(A_L,W_r,A_R)
+    r_L, l_L = Tw_to_rl(T_RL)
+    l_R, r_R = Tw_to_rl(T_LR)
+    T_RL *= np.exp(-1j * p)
+    T_LR *= np.exp(1j * p)
+    D, d, _ = A_L.shape
+    A_tmp = A_L.reshape(D * d, D).T
+    V_L = linalg.null_space(A_tmp)
+    V_L = V_L.reshape(D, d, D*(d-1))
+    def map_effective_H(X):
+        X = X.reshape(D*(d-1),D)
+        B = ncon([V_L,X],
+                 [[-1,-2,1],[1,-3]])
+        LBWA_L = combine_LBWA_L(L_W, B, W, A_L)
+        RBWA_R = combine_RBWA_R(R_W, B, W, A_R)
+        L_B = quasi_sum_right_left(T_RL,r_L,l_L,LBWA_L)
+        R_B = quasi_sum_right_left(T_LR,l_R,r_R,RBWA_R)
+        term1 = np.exp(-1j*p)*ncon([L_B,Ac,W,R_W],
+                                    [[-1,1,2],[2,5,4],[1,3,5,-2],[-3,3,4]])
+        term2 = np.exp(1j*p)*ncon([L_W,Ac,W,R_B],
+                                  [[-1,1,2],[2,5,4],[1,3,5,-2],[-3,3,4]])
+        term3 = ncon([L_W,B,W,R_W],
+                     [[-1,1,2],[2,5,4],[1,3,5,-2],[-3,3,4]])
+        Teff_B = term1+term2+term3
+        Teff_X = ncon([Teff_B, np.conj(V_L)],
+                      [[1,2,-2],[1,2,-1]])
+        return Teff_X.reshape(-1)
+    omega, X = eigs(LinearOperator((D ** 2*(d-1), D ** 2*(d-1)), matvec=map_effective_H), k=10, which='SR', tol=1e-6)
+    X = X.reshape(D*(d-1),D)
+    # omega, X = eigsh(LinearOperator((D ** 2, D ** 2), matvec=map_effective_H), k=10, which='SA', tol=1e-6)
+    # print(omega)
+    return omega, X
+
+def quasiparticle_typo(W, p, Ac, A_L, A_R, L_W, R_W):
+    '''Typo(?) version of quasiparticle. The use of {T_Wl,T_Wr} seems to be wrong'''
+    T_Wl = A_W_to_Tw(A_L, W)
+    W_r = W.transpose([1, 0, 2, 3])
+    T_Wr = A_W_to_Tw(A_R, W_r)
+    r_L, l_L = Tw_to_rl(T_Wl)
+    l_R, r_R = Tw_to_rl(T_Wr)
+    T_Wl *= np.exp(-1j * p)
+    T_Wr *= np.exp(1j * p)
+    D, d, _ = A_L.shape
+    A_tmp = A_L.reshape(D * d, D).T
+    V_L = linalg.null_space(A_tmp)
+    V_L = V_L.reshape(D, d, D*(d-1))
+    def map_effective_H(X):
+        X = X.reshape(D*(d-1),D)
+        B = ncon([V_L,X],
+                 [[-1,-2,1],[1,-3]])
+        LBWA_L = combine_LBWA_L(L_W, B, W, A_L)
+        RBWA_R = combine_RBWA_R(R_W, B, W, A_R)
+        L_B = quasi_sum_right_left(T_Wl,r_L,l_L,LBWA_L)
+        R_B = quasi_sum_right_left(T_Wr,l_R,r_R,RBWA_R)
+        term1 = np.exp(-1j*p)*ncon([L_B,Ac,W,R_W],
+                                    [[-1,1,2],[2,5,4],[1,3,5,-2],[-3,3,4]])
+        term2 = np.exp(1j*p)*ncon([L_W,Ac,W,R_B],
+                                  [[-1,1,2],[2,5,4],[1,3,5,-2],[-3,3,4]])
+        term3 = ncon([L_W,B,W,R_W],
+                     [[-1,1,2],[2,5,4],[1,3,5,-2],[-3,3,4]])
+        Teff_B = term1+term2+term3
+        Teff_X = ncon([Teff_B, np.conj(V_L)],
+                      [[1,2,-2],[1,2,-1]])
+        return Teff_X.reshape(-1)
+    omega, X = eigs(LinearOperator((D ** 2*(d-1), D ** 2*(d-1)), matvec=map_effective_H), k=10, which='SR', tol=1e-6)
+    # omega, X = eigsh(LinearOperator((D ** 2, D ** 2), matvec=map_effective_H), k=10, which='SA', tol=1e-4)
+    # print(omega)
+    return omega, X
 '''
 ########################################################################################################################
 Main Program
@@ -541,7 +710,7 @@ Main Program
 '''
 
 if __name__ == '__main__':
-    D = 24;
+    D = 10;
     d = 2
     A = np.random.rand(D, d, D)
     L0 = np.random.randn(D, D)
@@ -554,8 +723,8 @@ if __name__ == '__main__':
     sM = sX - 1j * sY
     # print(sP)
     # exit()
-    model = 'XXZ'
-    hz_field = 1.2
+    model = 'TFIM'
+    hz_field = 0.9
     print('We are solving '+model+' model!')
     print('D = ', D)
     if model == 'XX':
@@ -604,9 +773,30 @@ if __name__ == '__main__':
         Exact = E_XXZ[delta]*4
     print('Exact = ', Exact)
 
-    vumps_2sites(hloc, A, eta=1e-8)
-    vumps_mpo(W,A, eta=1e-8)
-    # print('Exact = ', Exact)
+    vumps_2sites(hloc, A, eta=1e-7)
+    Ac, C, A_L, A_R, L_W, R_W = vumps_mpo(W,A, eta=1e-6)
+    exit()
+    # p = np.pi*9.9/10
+    p = 0.0
+    omega, X = quasiparticle_correct(W, p, Ac, A_L, A_R, L_W, R_W)
+    print(omega)
+    exit()
+    p_xaxis = np.linspace(0, np.pi*10/10, num=10)
+    # p_xaxis = np.linspace(np.pi * 9.8 / 10, 0, num=10)
+    omega_yaxis = []
+    for p in np.linspace(0, np.pi*9.8/10, num=10):
+        print('p = ', p)
+        omega, X = quasiparticle_correct(W,p,Ac, A_L, A_R, L_W, R_W)
+        omega_yaxis.append(4*omega.real)
+        print(omega)
+        print('finish!')
+    # Teff_X = effective_H(X,p,Ac,A_L,A_R,L_W,R_W)
+    # print('smooth!')
+    elem_ex = lambda k: 2 * np.sqrt(1 + hz_field ** 2 - 2 * hz_field * np.cos(k))
+    plt.plot(p_xaxis, omega_yaxis, 'bo',label = 'trivial')
+    p = np.linspace(0, np.pi, num=100)
+    plt.plot(p, elem_ex(p), 'c-', label='exact elem. excitation')
+    plt.show()
     exit()
 
     # print(L_W1)
@@ -616,4 +806,3 @@ if __name__ == '__main__':
     C = lam
     Ac = ncon([A_L,C],
               [[-1,-2,1], [1,-3]])
-
