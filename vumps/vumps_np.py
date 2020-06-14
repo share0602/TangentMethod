@@ -5,6 +5,8 @@ from scipy.sparse.linalg import eigs
 from scipy.sparse.linalg import eigsh
 from scipy.sparse.linalg import LinearOperator
 from scipy.sparse.linalg import bicgstab
+# from scipy.sparse.linalg import bicg
+
 import matplotlib.pyplot as plt
 import copy
 
@@ -25,7 +27,7 @@ Four sections:
 1.Functions that will be used for both 2sites and MPO
 2.Functions only for 2sites VUMPS
 3.Functions only for MPO VUMPS
-4.Excitation: Seems to have something wrong
+4.Excitation
 '''
 
 '''
@@ -413,6 +415,7 @@ def vumps_2sites(h, A, eta=1e-7):
             print('delta = ', delta)
             print('Eac = ', E_Ac)
             print('Ec = ',E_C)
+            print('Eac/Ec', E_Ac/E_C)
         count += 1
     print(50*'-'+' final '+50*'-')
     print('energy = ', e)
@@ -511,7 +514,8 @@ def vumps_mpo(W,A,eta = 1e-8):
     e_memory = -1
     e = 0
     count = 0
-    while delta > eta and abs(e - e_memory) > eta / 10:
+
+    while (delta > eta and abs(e - e_memory) > eta / 10) or count <15:
         L_W, R_W, energy = get_Lh_Rh_mpo(A_L,A_R,C,W)
         E_Ac, Ac = eigs(LinearOperator((D ** 2 * d, D ** 2 * d), matvec=map_Hac), k=1, which='SR',
                         v0=Ac.reshape(-1), tol=delta / 10)
@@ -531,12 +535,17 @@ def vumps_mpo(W,A,eta = 1e-8):
             print('delta = ', delta)
             print('Eac = ', E_Ac)
             print('Ec = ', E_C)
+            print('Eac-Ec = ', E_Ac-E_C)
             print('Eac/Ec = ', E_Ac/E_C)
         count += 1
     print(50 * '-' + ' final ' + 50 * '-')
     print('energy = ', e)
     energy_error = abs((e-Exact)/Exact)
     print('Error', energy_error)
+    # test_energy = ncon([L_W,Ac,W,np.conj(Ac),R_W],
+    #                    [[3,2,1],[1,7,4],[2,5,7,8],[3,8,6],[6,5,4]])
+    # print('test_energy = ', test_energy)
+    # exit()
     return Ac, C, A_L, A_R, L_W, R_W
 '''
 ########################################################################################################################
@@ -604,7 +613,10 @@ def quasi_sum_right_left(T_W, r, l, x):
         return y_out.reshape(-1)
     D,d_w,_ = x.shape
     x_tilda = x - ncon([x,r],[[1,2,3],[1,2,3]])*l
-    y, info = bicgstab(LinearOperator((D**2*d_w, D**2*d_w), matvec=trans_map), x_tilda.reshape(-1), x0=x_tilda.reshape(-1))
+    y, info = bicgstab(LinearOperator((D**2*d_w, D**2*d_w), matvec=trans_map), x_tilda.reshape(-1),
+                       x0=x_tilda.reshape(-1))
+    # y, info = bicg(LinearOperator((D ** 2 * d_w, D ** 2 * d_w), matvec=trans_map), x_tilda.reshape(-1),
+    #                    x0=x_tilda.reshape(-1))
     y = y.reshape(D,d_w,D)
     if info != 0:
         print('bicgstab did not converge!')
@@ -623,7 +635,7 @@ def combine_RBWA_R(R_W, B, W, A_R):
 
 def quasiparticle_correct(W, p, Ac, A_L, A_R, L_W, R_W):
     '''
-    Corrected version of quasiparticle. Only difference is we use {T_RL, T_LR}
+    Corrected version of quasiparticle.
     :param W: MPO
     :param p: momentum
     :param Ac: Only used in evaluating H_eff
@@ -652,9 +664,9 @@ def quasiparticle_correct(W, p, Ac, A_L, A_R, L_W, R_W):
         RBWA_R = combine_RBWA_R(R_W, B, W, A_R)
         L_B = quasi_sum_right_left(T_RL,r_L,l_L,LBWA_L)
         R_B = quasi_sum_right_left(T_LR,l_R,r_R,RBWA_R)
-        term1 = np.exp(-1j*p)*ncon([L_B,Ac,W,R_W],
-                                    [[-1,1,2],[2,5,4],[1,3,5,-2],[-3,3,4]])
-        term2 = np.exp(1j*p)*ncon([L_W,Ac,W,R_B],
+        term1 = np.exp(-1j*p)*ncon([L_B,A_R,W,R_W],
+                                    [[-1,1,2],[4,5,2],[1,3,5,-2],[-3,3,4]])
+        term2 = np.exp(1j*p)*ncon([L_W,A_L,W,R_B],
                                   [[-1,1,2],[2,5,4],[1,3,5,-2],[-3,3,4]])
         term3 = ncon([L_W,B,W,R_W],
                      [[-1,1,2],[2,5,4],[1,3,5,-2],[-3,3,4]])
@@ -662,14 +674,14 @@ def quasiparticle_correct(W, p, Ac, A_L, A_R, L_W, R_W):
         Teff_X = ncon([Teff_B, np.conj(V_L)],
                       [[1,2,-2],[1,2,-1]])
         return Teff_X.reshape(-1)
-    omega, X = eigs(LinearOperator((D ** 2*(d-1), D ** 2*(d-1)), matvec=map_effective_H), k=10, which='SR', tol=1e-6)
-    X = X.reshape(D*(d-1),D)
-    # omega, X = eigsh(LinearOperator((D ** 2, D ** 2), matvec=map_effective_H), k=10, which='SA', tol=1e-6)
+    # omega, X = eigs(LinearOperator((D ** 2*(d-1), D ** 2*(d-1)), matvec=map_effective_H), k=10, which='SR', tol=1e-6)
+    # X = X.reshape(D*(d-1),D)
+    omega, X = eigsh(LinearOperator((D ** 2, D ** 2), matvec=map_effective_H), k=10, which='SA', tol=1e-6)
     # print(omega)
     return omega, X
 
 def quasiparticle_typo(W, p, Ac, A_L, A_R, L_W, R_W):
-    '''Typo(?) version of quasiparticle. The use of {T_Wl,T_Wr} seems to be wrong'''
+    '''Typo version of quasiparticle.'''
     T_Wl = A_W_to_Tw(A_L, W)
     W_r = W.transpose([1, 0, 2, 3])
     T_Wr = A_W_to_Tw(A_R, W_r)
@@ -710,8 +722,12 @@ Main Program
 '''
 
 if __name__ == '__main__':
-    D = 10;
+    D = 8;
     d = 2
+    model = 'TFIM'
+    hz_field = 0.9
+    print('We are solving ' + model + ' model!')
+    print('D = ', D)
     A = np.random.rand(D, d, D)
     L0 = np.random.randn(D, D)
     R0 = np.random.randn(D, D)
@@ -723,10 +739,6 @@ if __name__ == '__main__':
     sM = sX - 1j * sY
     # print(sP)
     # exit()
-    model = 'TFIM'
-    hz_field = 0.9
-    print('We are solving '+model+' model!')
-    print('D = ', D)
     if model == 'XX':
         ## XX model
         hloc = (np.real(np.kron(sX, sX) + np.kron(sY, sY))).reshape(2, 2, 2, 2)
@@ -739,6 +751,7 @@ if __name__ == '__main__':
         # W[1, 0] = W[3, 1] = sX/np.sqrt(2)
         # W[2, 0] = W[3, 2] = sY/np.sqrt(2)
         Exact = -4/np.pi ## = -1.27...
+        elem_ex = lambda k: 2*np.sqrt(2+2*np.cos(2*k))
     elif model == 'TFIM':
         ## TFIM
         print('hz = ', hz_field)
@@ -753,6 +766,7 @@ if __name__ == '__main__':
         x = np.linspace(0, 2 * np.pi, N + 1)
         y = np.sqrt((hz_field - 1) ** 2 + 4 * hz_field * np.sin(x / 2) ** 2)
         Exact = -0.5 * sum(y[1:(N + 1)] + y[:N]) / N
+        elem_ex = lambda k: np.sqrt(1 + hz_field ** 2 - 2 * hz_field * np.cos(k))
     elif model == 'XXZ':
         ## XXZ model
         ## data of XXZ model
@@ -773,29 +787,45 @@ if __name__ == '__main__':
         Exact = E_XXZ[delta]*4
     print('Exact = ', Exact)
 
-    vumps_2sites(hloc, A, eta=1e-7)
+    # vumps_2sites(hloc, A, eta=1e-7)
+    # exit()
     Ac, C, A_L, A_R, L_W, R_W = vumps_mpo(W,A, eta=1e-6)
-    exit()
+    # exit()
     # p = np.pi*9.9/10
-    p = 0.0
-    omega, X = quasiparticle_correct(W, p, Ac, A_L, A_R, L_W, R_W)
-    print(omega)
-    exit()
-    p_xaxis = np.linspace(0, np.pi*10/10, num=10)
+    # p = 0.0
+    # omega, X = quasiparticle_correct(W, p, Ac, A_L, A_R, L_W, R_W)
+    # print(omega)
+    # omega, X = quasiparticle_correct(W, p, Ac, A_L, A_R, L_W, R_W)
+    # print(omega)
+    # omega, X = quasiparticle_correct(W, p, Ac, A_L, A_R, L_W, R_W)
+    # print(omega)
+    # exit()
+    p_xaxis = []
     # p_xaxis = np.linspace(np.pi * 9.8 / 10, 0, num=10)
     omega_yaxis = []
-    for p in np.linspace(0, np.pi*9.8/10, num=10):
+    num_of_p = 5
+    for p in np.linspace(0, np.pi*10/10, num_of_p):
         print('p = ', p)
         omega, X = quasiparticle_correct(W,p,Ac, A_L, A_R, L_W, R_W)
-        omega_yaxis.append(4*omega.real)
-        print(omega)
+        omega_yaxis.append(omega.real-Exact)
+        # omega_yaxis.append(omega.real)
+        print(omega-Exact)
+        p_xaxis.append([p] * 10)
+        # print(omega)
         print('finish!')
     # Teff_X = effective_H(X,p,Ac,A_L,A_R,L_W,R_W)
     # print('smooth!')
-    elem_ex = lambda k: 2 * np.sqrt(1 + hz_field ** 2 - 2 * hz_field * np.cos(k))
-    plt.plot(p_xaxis, omega_yaxis, 'bo',label = 'trivial')
+    # elem_ex = lambda k: np.sqrt(1 + hz_field ** 2 - 2 * hz_field * np.cos(k))
+    omega_yaxis = np.array(omega_yaxis).ravel()
+    p_xaxis = np.array(p_xaxis).ravel()
+    plt.plot(p_xaxis, omega_yaxis, 'bo', label = 'trivial')
     p = np.linspace(0, np.pi, num=100)
-    plt.plot(p, elem_ex(p), 'c-', label='exact elem. excitation')
+    plt.plot(p, elem_ex(p), 'c-', label='exact')
+    plt.title('TFIM Excitation:'+' hz = '+str(hz_field))
+    plt.xlabel('Momentum p')
+    plt.ylabel('dE')
+    plt.grid()
+    plt.legend()
     plt.show()
     exit()
 
