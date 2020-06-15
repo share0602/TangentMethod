@@ -588,7 +588,7 @@ def Tw_to_rl(T_W):
     l = l.reshape(D,d_w,D)
     r_val, r = eigs(LinearOperator((D**2*d_w, D**2*d_w), matvec=map_r), k=1, which='LM')
     r = r.reshape(D,d_w,D)
-    print('norm(l_val) = ', linalg.norm(l_val), 'norm(r_val) = ', linalg.norm(r_val))
+    # print('norm(l_val) = ', linalg.norm(l_val), 'norm(r_val) = ', linalg.norm(r_val))
     # print(l_val, r_val)
     # exit()
     return r, l
@@ -676,7 +676,9 @@ def quasiparticle_correct(W, p, Ac, A_L, A_R, L_W, R_W):
         return Teff_X.reshape(-1)
     # omega, X = eigs(LinearOperator((D ** 2*(d-1), D ** 2*(d-1)), matvec=map_effective_H), k=10, which='SR', tol=1e-6)
     # X = X.reshape(D*(d-1),D)
-    omega, X = eigsh(LinearOperator((D ** 2, D ** 2), matvec=map_effective_H), k=10, which='SA', tol=1e-6)
+    omega, X = eigsh(LinearOperator((D ** 2*(d-1), D ** 2*(d-1)), matvec=map_effective_H), k=10, which='SA', tol=1e-6)
+    # print(X.shape)
+    # exit()
     # print(omega)
     return omega, X
 
@@ -751,7 +753,7 @@ if __name__ == '__main__':
         # W[1, 0] = W[3, 1] = sX/np.sqrt(2)
         # W[2, 0] = W[3, 2] = sY/np.sqrt(2)
         Exact = -4/np.pi ## = -1.27...
-        elem_ex = lambda k: 2*np.sqrt(2+2*np.cos(2*k))
+        # elem_ex = lambda k: 2*np.sqrt(2+2*np.cos(2*k))
     elif model == 'TFIM':
         ## TFIM
         print('hz = ', hz_field)
@@ -762,6 +764,11 @@ if __name__ == '__main__':
         W[1, 0] = -sX;
         W[2, 1] = sX
         W[2, 0] = -hz_field * sZ
+
+        # W[0, 0] = W[2, 2] = sI
+        # W[1, 0] = -sZ;
+        # W[2, 1] = sZ
+        # W[2, 0] = -hz_field * sX
         N = 1000000;
         x = np.linspace(0, 2 * np.pi, N + 1)
         y = np.sqrt((hz_field - 1) ** 2 + 4 * hz_field * np.sin(x / 2) ** 2)
@@ -811,7 +818,7 @@ if __name__ == '__main__':
         # omega_yaxis.append(omega.real)
         print(omega-Exact)
         p_xaxis.append([p] * 10)
-        # print(omega)
+        print(omega)
         print('finish!')
     # Teff_X = effective_H(X,p,Ac,A_L,A_R,L_W,R_W)
     # print('smooth!')
