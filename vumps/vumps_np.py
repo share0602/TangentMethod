@@ -633,12 +633,11 @@ def combine_RBWA_R(R_W, B, W, A_R):
                   [[1,2,3],[-3,5,3],[-2,2,5,4],[1,4,-1]])
     return RBWA_R
 
-def quasiparticle_correct(W, p, Ac, A_L, A_R, L_W, R_W):
+def quasiparticle_correct(W, p, A_L, A_R, L_W, R_W):
     '''
     Corrected version of quasiparticle.
     :param W: MPO
     :param p: momentum
-    :param Ac: Only used in evaluating H_eff
     :param A_L: Used to get mpo transfer matrix and LBWA_L
     :param A_R: Used to get mpo transfer matrix and RBWA_R
     :param L_W: Left fixed point of MPO, which is obtained from vumps_mpo.
@@ -727,7 +726,7 @@ if __name__ == '__main__':
     D = 8;
     d = 2
     model = 'TFIM'
-    hz_field = 0.9
+    hz_field = 1.0
     print('We are solving ' + model + ' model!')
     print('D = ', D)
     A = np.random.rand(D, d, D)
@@ -813,13 +812,12 @@ if __name__ == '__main__':
     num_of_p = 5
     for p in np.linspace(0, np.pi*10/10, num_of_p):
         print('p = ', p)
-        omega, X = quasiparticle_correct(W,p,Ac, A_L, A_R, L_W, R_W)
+        omega, X = quasiparticle_correct(W,p, A_L, A_R, L_W, R_W)
         omega_yaxis.append(omega.real-Exact)
         # omega_yaxis.append(omega.real)
         print(omega-Exact)
         p_xaxis.append([p] * 10)
         print(omega)
-        print('finish!')
     # Teff_X = effective_H(X,p,Ac,A_L,A_R,L_W,R_W)
     # print('smooth!')
     # elem_ex = lambda k: np.sqrt(1 + hz_field ** 2 - 2 * hz_field * np.cos(k))
