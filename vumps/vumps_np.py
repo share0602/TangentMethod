@@ -409,13 +409,13 @@ def vumps_2sites(h, A, eta=1e-7):
         delta = linalg.norm(Ac-Al_C)
         energy_error = abs((e - Exact)/Exact)
 
-        if count%5 == 0:
+        if count%20 == 0:
             print(50*'-'+'steps',count, 50*'-')
             print('energy = ', e)
-            print('delta = ', delta)
-            print('Eac = ', E_Ac)
-            print('Ec = ',E_C)
-            print('Eac/Ec', E_Ac/E_C)
+            # print('delta = ', delta)
+            # print('Eac = ', E_Ac)
+            # print('Ec = ',E_C)
+            # print('Eac/Ec', E_Ac/E_C)
         count += 1
     print(50*'-'+' final '+50*'-')
     print('energy = ', e)
@@ -546,7 +546,7 @@ def vumps_mpo(W,A,eta = 1e-8):
     #                    [[3,2,1],[1,7,4],[2,5,7,8],[3,8,6],[6,5,4]])
     # print('test_energy = ', test_energy)
     # exit()
-    return Ac, C, A_L, A_R, L_W, R_W
+    return e, Ac, C, A_L, A_R, L_W, R_W
 '''
 ########################################################################################################################
 Excitation Part
@@ -647,6 +647,8 @@ def quasiparticle_correct(W, p, A_L, A_R, L_W, R_W):
     T_RL = get_T_RL_or_T_LR(A_R, W, A_L)
     W_r = W.transpose([1, 0, 2, 3])
     T_LR = get_T_RL_or_T_LR(A_L,W_r,A_R)
+    # T_RL *= np.exp(-1j * p)
+    # T_LR *= np.exp(1j * p)
     r_L, l_L = Tw_to_rl(T_RL)
     l_R, r_R = Tw_to_rl(T_LR)
     T_RL *= np.exp(-1j * p)
@@ -716,6 +718,64 @@ def quasiparticle_typo(W, p, Ac, A_L, A_R, L_W, R_W):
     # omega, X = eigsh(LinearOperator((D ** 2, D ** 2), matvec=map_effective_H), k=10, which='SA', tol=1e-4)
     # print(omega)
     return omega, X
+
+def domain_sum_right_left(T_R2L1,x):
+    D, d_w, _ = x.shape
+    def map_inv_L(y):
+        y = y.reshape(D,d_w,D)
+        term1 = y
+        term2 = ncon([T_R2L1, y],
+                     [[-1,-2,-3,1,2,3],[1,2,3]])
+        y_out = term1 - term2
+        return y_out.reshape(-1)
+    y, info = bicgstab(LinearOperator((D ** 2 * d_w, D ** 2 * d_w), matvec=map_inv_L), x.reshape(-1),
+                       x0=x.reshape(-1))
+    if info != 0:
+        print('bicgstab did not converge!')
+        exit()
+    y = y.reshape(D,d_w,D)
+    return y
+
+def quasiparticle_domain(W, p, A_L1, A_R2, L_W, R_W):
+    D, d, _ = A_L1.shape
+    A_tmp = A_L1.reshape(D * d, D).T
+    V_L = linalg.null_space(A_tmp)
+    V_L = V_L.reshape(D, d, D * (d - 1))
+    T_R2L1 = get_T_RL_or_T_LR(A_R2, W, A_L1)
+    lval, l = eigs(T_R2L1.reshape(D**2*d_w,D**2*d_w),k=1, which='LM')
+    # print(linalg.norm)
+    # B = 0
+    A_R2*= np.conj(lval)/linalg.norm(lval)
+    T_R2L1 = get_T_RL_or_T_LR(A_R2, W, A_L1)
+    T_R2L1 *= np.exp(-1j*p)
+    W_r = W.transpose([1, 0, 2, 3])
+    T_L1R2 = get_T_RL_or_T_LR(A_L1, W_r, A_R2)
+    T_L1R2 *= np.exp(1j*p)
+    # print('solving eigsh')
+    def map_effective_H(X):
+        # print('doing map_H')
+        X = X.reshape(D*(d-1),D)
+        B = ncon([V_L,X],
+                 [[-1,-2,1],[1,-3]])
+        LBWA_L1 = combine_LBWA_L(L_W, B, W, A_L1)
+        RBWA_R2 = combine_RBWA_R(R_W, B, W, A_R2)
+        L_B = domain_sum_right_left(T_R2L1, LBWA_L1)
+        R_B = domain_sum_right_left(T_L1R2, RBWA_R2)
+        term1 = np.exp(-1j*p)*ncon([L_B,A_R2,W,R_W],
+                                    [[-1,1,2],[4,5,2],[1,3,5,-2],[-3,3,4]])
+        term2 = np.exp(1j*p)*ncon([L_W, A_L1, W, R_B],
+                                  [[-1,1,2],[2,5,4],[1,3,5,-2],[-3,3,4]])
+        term3 = ncon([L_W,B,W,R_W],
+                     [[-1,1,2],[2,5,4],[1,3,5,-2],[-3,3,4]])
+        Teff_B = term1+term2+term3
+        Teff_X = ncon([Teff_B, np.conj(V_L)],
+                      [[1,2,-2],[1,2,-1]])
+        return Teff_X.reshape(-1)
+    omega, X = eigsh(LinearOperator((D ** 2 * (d - 1), D ** 2 * (d - 1)), matvec=map_effective_H), k=10, which='SA',
+                     tol=1e-6)
+    # omega, X = eigs(LinearOperator((D ** 2 * (d - 1), D ** 2 * (d - 1)), matvec=map_effective_H), k=10, which='SR',
+    #                 tol=1e-6)
+    return omega
 '''
 ########################################################################################################################
 Main Program
@@ -726,7 +786,7 @@ if __name__ == '__main__':
     D = 8;
     d = 2
     model = 'TFIM'
-    hz_field = 1.0
+    hz_field = 1.4
     print('We are solving ' + model + ' model!')
     print('D = ', D)
     A = np.random.rand(D, d, D)
@@ -779,7 +839,7 @@ if __name__ == '__main__':
         ## Ref: "Study of the ground state of the one-dimensionalHeisenberg spin-1 chain 2"; Author: K.R. de Ruiter
         # delta        0.        0.25      0.50      0.75      1.
         # E_infty/LJ  -0.318310 -0.345180 -0.375000 -0.407659 -0.443147
-        delta = 1.0
+        delta = 4.0
         E_XXZ = {0.:-0.318310, 0.25: -0.345180, -0.50:-0.375000, 0.75:-0.407659, 1.:  -0.443147}
         print('delta = ', delta)
         hloc = np.real(np.kron(sX, sX) +np.kron(sY,sY) +delta*np.kron(sZ,sZ)).reshape(2, 2, 2, 2)
@@ -795,38 +855,44 @@ if __name__ == '__main__':
 
     # vumps_2sites(hloc, A, eta=1e-7)
     # exit()
-    Ac, C, A_L, A_R, L_W, R_W = vumps_mpo(W,A, eta=1e-6)
+    e_cal, Ac, C, A_L, A_R, L_W, R_W = vumps_mpo(W,A, eta=1e-8)
     # exit()
-    # p = np.pi*9.9/10
+    A_L1 = A_L
+    A_R2 = ncon([A_R, sZ],
+                [[-1, 1, -3], [1, -2]])
+
+
+
+    # p = np.pi * 5 / 10
     # p = 0.0
-    # omega, X = quasiparticle_correct(W, p, Ac, A_L, A_R, L_W, R_W)
+    # omega, X = quasiparticle_correct(W, p, A_L, A_R, L_W, R_W)
     # print(omega)
-    # omega, X = quasiparticle_correct(W, p, Ac, A_L, A_R, L_W, R_W)
-    # print(omega)
-    # omega, X = quasiparticle_correct(W, p, Ac, A_L, A_R, L_W, R_W)
-    # print(omega)
-    # exit()
-    p_xaxis = []
-    # p_xaxis = np.linspace(np.pi * 9.8 / 10, 0, num=10)
-    omega_yaxis = []
-    num_of_p = 5
+    p_xaxis_ = []
+    omega_triv = []
+    omega_nontriv = []
+    num_of_p = 15
     for p in np.linspace(0, np.pi*10/10, num_of_p):
         print('p = ', p)
         omega, X = quasiparticle_correct(W,p, A_L, A_R, L_W, R_W)
-        omega_yaxis.append(omega.real-Exact)
+        omega_triv.append(omega.real - e_cal.real)
         # omega_yaxis.append(omega.real)
-        print(omega-Exact)
-        p_xaxis.append([p] * 10)
+        print('omega-e_cal (trivial)= ', omega-e_cal)
+        p_xaxis_.append([p] * 10)
+        omega = quasiparticle_domain(W,p, A_L1, A_R2, L_W, R_W)
+        omega_nontriv.append(omega.real - e_cal.real)
+        print('omega-e_cal (non-trivial)= ', omega - e_cal)
         print(omega)
-    # Teff_X = effective_H(X,p,Ac,A_L,A_R,L_W,R_W)
-    # print('smooth!')
     # elem_ex = lambda k: np.sqrt(1 + hz_field ** 2 - 2 * hz_field * np.cos(k))
-    omega_yaxis = np.array(omega_yaxis).ravel()
-    p_xaxis = np.array(p_xaxis).ravel()
-    plt.plot(p_xaxis, omega_yaxis, 'bo', label = 'trivial')
+    omega_triv = np.array(omega_triv).ravel()
+    p_xaxis_ = np.array(p_xaxis_).ravel()
+    plt.plot(p_xaxis_, omega_triv, 'bo', label ='trivial')
+    omega_nontriv = np.array(omega_nontriv).ravel()
+    p_xaxis_nontriv = np.array(p_xaxis_).ravel()
+    plt.plot(p_xaxis_nontriv, omega_nontriv, 'ro', label='non-trivial')
     p = np.linspace(0, np.pi, num=100)
     plt.plot(p, elem_ex(p), 'c-', label='exact')
     plt.title('TFIM Excitation:'+' hz = '+str(hz_field))
+    # plt.title('XXZ Excitation:' + ' delta = ' + str(delta))
     plt.xlabel('Momentum p')
     plt.ylabel('dE')
     plt.grid()
