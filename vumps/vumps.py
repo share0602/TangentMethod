@@ -1,3 +1,4 @@
+import constants
 from ncon import ncon
 import numpy as np
 from scipy import linalg
@@ -268,6 +269,25 @@ def min_Ac_C(Ac, C):
     U_c, S_c, V_dagger_c = linalg.svd(C_r, full_matrices=False)
     A_R = (U_Ac@V_dagger_Ac)@np.conj(U_c@V_dagger_c).T
     A_R = A_R.reshape(D,d,D)
+
+    '''u_l_ac, _ = linalg.polar(Ac.reshape(D * d, D), side='left')
+    u_l_c, _ = linalg.polar(C, side='left')
+
+    al_tilda = u_l_ac @ np.conj(u_l_c).T
+    al_tilda = al_tilda.reshape(D, d, D)
+
+    print('left test:', linalg.norm(al_tilda - A_L))
+
+    u_r_ac, _ = linalg.polar(Ac.reshape(D, D * d), side='right')
+    u_r_c, _ = linalg.polar(C, side='right')
+
+    ar_tilda = np.conj(u_r_c).T @ u_r_ac
+    ar_tilda = ar_tilda.reshape(D, d, D)
+    ar_tilda = ar_tilda.transpose([2, 1, 0])
+
+    print('right test:', linalg.norm(ar_tilda - A_R))
+
+    return al_tilda, ar_tilda'''
     return A_L, A_R
 
 '''
@@ -409,7 +429,6 @@ def vumps_2sites(h, A, eta=1e-7):
         Al_C =  ncon([A_L, C],
                     [[-1, -2, 1], [1, -3]])
         delta = linalg.norm(Ac-Al_C)
-        energy_error = abs((e - Exact)/Exact)
 
         if count%5 == 0:
             print(50*'-'+'steps',count, 50*'-')
@@ -421,7 +440,6 @@ def vumps_2sites(h, A, eta=1e-7):
         count += 1
     print(50*'-'+' final '+50*'-')
     print('energy = ', e)
-    print('energy error = ', energy_error)
     return e, A_L, A_R, Ac, C, L_h, R_h
         # exit()
 
@@ -542,25 +560,109 @@ def vumps_mpo(W,A,eta = 1e-8):
             print('Eac/Ec = ', E_Ac/E_C)
         count += 1
     print(50 * '-' + ' final ' + 50 * '-')
+    print('delta = ', delta)
     print('energy = ', e)
-    energy_error = abs((e-Exact)/Exact)
-    print('Error', energy_error)
     # test_energy = ncon([L_W,Ac,W,np.conj(Ac),R_W],
     #                    [[3,2,1],[1,7,4],[2,5,7,8],[3,8,6],[6,5,4]])
     # print('test_energy = ', test_energy)
     # exit()
     return e, Ac, C, A_L, A_R, L_W, R_W
+
+'''
+##############################################################
+vumps_fixed_points
+##############################################################
+'''
+
+def A_W_to_Tw(A_L, W):
+    '''Get T_Wl or T_Wr
+    See eqn(250) in arXiv:1810.07006v3'''
+    T_W = ncon([A_L, W, np.conj(A_L)],
+                [[-6,1,-3], [-5,-2,1,2], [-4,2,-1]])
+    return T_W
+
+def fixed_boundary(A_L,W,eta = 1e-8):
+    d_w, _, _, _ = W.shape
+    D, d, _ = A_L.shape
+    T_W = A_W_to_Tw(A_L,W)
+    T_W = T_W.reshape(D**2*d_w,D**2*d_w)
+    lam, Lw = eigs(T_W, k=1, which='LM',tol=eta)
+    Lw = Lw.reshape(D,d_w,D)
+    return lam, Lw
+
+def overlap_fixed_boundary(Lw,Rw,C):
+    overlap = ncon([Lw,C,Rw,np.conj(C)],
+                   [[4,3,1], [1,2], [5,3,2], [4,5]])
+    return overlap
+
+def vumps_fixed_points(W,A,eta=1e-8):
+    def map_Hac(Ac):
+        Ac = Ac.reshape(D,d,D)
+        Ac_new = ncon([Lw,Ac,W,Rw],
+                      [[-1,3,1],[1,5,2],[3,4,5,-2],[-3,4,2]])/lam1
+        return Ac_new.reshape(-1)
+    def map_Hc(C):
+        C= C.reshape(D,D)
+        C_new = ncon([Lw,C,Rw],
+                     [[-1,3,1],[1,2],[-2,3,2]])
+        return C_new.reshape(-1)
+    D, d, _ = A.shape
+    lam, gamma = A_to_lam_gamma(A)
+    lam, gamma = lam_gamma_to_canonical(lam, gamma)
+    A_L, A_R = canonical_to_Al_Ar(lam, gamma)
+    C = lam
+    Ac = ncon([A_L, C],
+              [[-1, -2, 1], [1, -3]])
+    delta = eta * 1000
+    count = 0
+
+    while (delta > eta) or count <15:
+        lam1, Lw = fixed_boundary(A_L,W,delta/10)
+        W_r = W.transpose([1, 0, 2, 3])
+        lam2, Rw = fixed_boundary(A_R, W_r, delta/10)
+
+        norm = overlap_fixed_boundary(Lw,Rw,C)
+        Lw = Lw/norm
+        lam_Ac, Ac = eigs(LinearOperator((D ** 2 * d, D ** 2 * d), matvec=map_Hac), k=1, which='LM',
+                        v0=Ac.reshape(-1), tol=delta / 10)
+        Ac = Ac.reshape(D, d, D)
+        lam_C, C = eigs(LinearOperator((D ** 2, D ** 2), matvec=map_Hc), k=1, which='LM',
+                      v0=C.reshape(-1), tol=delta / 10)
+        C = C.reshape(D, D)
+        # print('lam_Ac = ', lam_Ac)
+        # print('lam_C = ', lam_C)
+        A_L, A_R = min_Ac_C(Ac, C)
+        Al_C = ncon([A_L, C],
+                    [[-1, -2, 1], [1, -3]])
+        delta = linalg.norm(Ac - Al_C)
+
+        if count % 10 == 0:
+            print(50 * '-' + 'steps', count, 50 * '-')
+            print('delta = ', delta)
+            print('lam1 = ', lam1)
+            print('lam2 = ', lam2)
+            print('norm = ', norm)
+        count += 1
+        if count > 200 and delta > 1e-3:
+            A = np.random.rand(D,d,D)
+            lam, gamma = A_to_lam_gamma(A)
+            lam, gamma = lam_gamma_to_canonical(lam, gamma)
+            A_L, A_R = canonical_to_Al_Ar(lam, gamma)
+            C = lam
+            Ac = ncon([A_L, C],
+                      [[-1, -2, 1], [1, -3]])
+            delta = eta * 1000
+            count = 0
+    print('delta = ', delta)
+    print('converge!')
+    return lam1, Ac, C, A_L, A_R, Lw, Rw
 '''
 ########################################################################################################################
 Excitation Part
 ########################################################################################################################
 '''
-def A_W_to_Tw(A_L, W):
-    '''Get T_Wl or T_Wr, which is only used in [quasiparticle_typo]
-    See eqn(265,266) in arXiv:1810.07006v3'''
-    T_W = ncon([A_L, W, np.conj(A_L)],
-                [[-6,1,-3], [-5,-2,1,2], [-4,2,-1]])
-    return T_W
+
+
 def get_T_RLw_or_T_LRw(A_R, W, A_L):
     '''Thie is ued in [quasiparticle_correct], which should be the correct transfer
     matrix to be used'''
@@ -702,7 +804,7 @@ def combine_RBWA_R(R_W, B, W, A_R):
                   [[1,2,3],[-3,5,3],[-2,2,5,4],[1,4,-1]])
     return RBWA_R
 
-def quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite):
+def quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite=1, system ='1D'):
     '''
     Corrected version of quasiparticle.
     :param W: MPO
@@ -745,22 +847,35 @@ def quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite):
                       [[1,2,-2],[1,2,-1]])
         return Teff_X.reshape(-1)
     # omega, X = eigs(LinearOperator((D ** 2*(d-1), D ** 2*(d-1)), matvec=map_effective_H), k=10, which='SR', tol=1e-6)
-    omega, X = eigsh(LinearOperator((D ** 2*(d-1), D ** 2*(d-1)), matvec=map_effective_H), k=num_of_excite, which='SA', tol=1e-6)
+    if system == '1D':
+        omega, X = eigsh(LinearOperator((D ** 2*(d-1), D ** 2*(d-1)), matvec=map_effective_H), k=num_of_excite, which='SA', tol=1e-6)
+    elif system == 'AKLT':
+        # omega, X = eigs(LinearOperator((D ** 2 * (d - 1), D ** 2 * (d - 1)), matvec=map_effective_H), k=num_of_excite, which='LM',
+        #                 tol=1e-6)
+        omega1, X = eigsh(LinearOperator((D ** 2 * (d - 1), D ** 2 * (d - 1)), matvec=map_effective_H), k=num_of_excite,
+                         which='LA', tol=1e-6)
+        # print('omega1 = ', omega1)
+        omega2, X = eigsh(LinearOperator((D ** 2 * (d - 1), D ** 2 * (d - 1)), matvec=map_effective_H), k=num_of_excite,
+                          which='SA', tol=1e-6)
+        # print('omega2 = ', omega2)
+        omega = np.hstack((omega1, omega2))
+    elif system == 'RVB':
+        omega, X = eigs(LinearOperator((D ** 2 * (d - 1), D ** 2 * (d - 1)), matvec=map_effective_H), k=num_of_excite, which='LM',
+                        tol=1e-6)
     X = X[:,0].reshape(D*(d-1),D)
     B = ncon([V_L, X],
              [[-1, -2, 1], [1, -3]])
-    LBWA_L = combine_LBWA_L(L_W, B, W, A_L)
-    test = ncon([LBWA_L, r_L],
-                [[1,2,3], [1,2,3]])
-    print('testing LBWA_L:',test)
-    RBWA_R = combine_RBWA_R(R_W, B, W, A_R)
-    test = ncon([RBWA_R, l_R],
-                [[1, 2, 3], [1, 2, 3]])
-    print('testing RBWA_R:',test)
-    # exit()
+    # LBWA_L = combine_LBWA_L(L_W, B, W, A_L)
+    # test = ncon([LBWA_L, r_L],
+    #             [[1,2,3], [1,2,3]])
+    # print('testing LBWA_L:',test)
+    # RBWA_R = combine_RBWA_R(R_W, B, W, A_R)
+    # test = ncon([RBWA_R, l_R],
+    #             [[1, 2, 3], [1, 2, 3]])
+    # print('testing RBWA_R:',test)
     return omega, X
 
-def quasiparticle_2sites(h2sites, p, A_L, A_R, L_h, R_h, numOfExcite):
+def quasiparticle_2sites(h2sites, p, A_L, A_R, L_h, R_h, num_of_excite=5):
     T_RL = get_T_RL_or_T_LR(A_R,A_L)
     T_LR = get_T_RL_or_T_LR(A_L,A_R)
     r_L, l_L = T_to_rl(T_RL)
@@ -846,7 +961,7 @@ def quasiparticle_2sites(h2sites, p, A_L, A_R, L_h, R_h, numOfExcite):
                       [[1,2,-2],[1,2,-1]])
         return Heff_X.reshape(-1)
     # omega, X = eigs(LinearOperator((D ** 2*(d-1), D ** 2*(d-1)), matvec=map_effective_H), k=10, which='SR', tol=1e-6)
-    omega, X = eigsh(LinearOperator((D ** 2*(d-1), D ** 2*(d-1)), matvec=map_effective_H), k=numOfExcite, which='SA', tol=1e-8)
+    omega, X = eigsh(LinearOperator((D ** 2*(d-1), D ** 2*(d-1)), matvec=map_effective_H), k=num_of_excite, which='SA', tol=1e-8)
     X = X[:,0]
     _ = map_effective_H(X)
     X = X.reshape(D * (d - 1), D)
@@ -875,90 +990,7 @@ def quasiparticle_2sites(h2sites, p, A_L, A_R, L_h, R_h, numOfExcite):
             print('H_%d = '%i, H[i])
         else: print('H_%d = '%i, 0)
     print('sum(H) = ', sum(H))
-    # exit()
-    # H[0] = ncon([Heff_B])
-    # print(Heff_B[0])
-    # exit()
-    # X = X.reshape(D*(d-1),D)
-    # print()
-    # test = ncon([map_effective_H(X), np.conj(X)],
-    #             [[1],[1]])
-    # print(X.shape)
-    # print(map_effective_H(X).shape)
-    # test = np.conj(X).T @map_effective_H(X)
-    # print(test)
-    '''X = X.reshape(D*(d-1),D)
-    Hx = map_effective_H(X).reshape(D*(d-1),D)
-    H_excites = ncon([Hx, np.conj(X)],
-                [[1,2],[1,2]])
-    print('H_excites = ', H_excites)
-
-    B = ncon([V_L, X],
-             [[-1, -2, 1], [1, -3]])
-    Heff_B0 = ncon([B, A_R, h2sites, np.conj(A_R)],
-                     [[-1, 3, 1], [2, 4, 1], [3, 4, -2, 5], [2, 5, -3]])
-    Heff_X = ncon([Heff_B0, np.conj(V_L)],
-                  [[1, 2, -2], [1, 2, -1]])
-    H0 = ncon([Heff_X, np.conj(X)],
-              [[1,2],[1,2]])
-    print('H0 = ', H0)
-
-    Heff_B1 = np.exp(-1j * p) * ncon([B, A_R, h2sites, np.conj(A_L)],
-                                       [[1, 3, 2], [-3, 4, 2], [3, 4, 5, -2], [1, 5, -1]])
-    Heff_X = ncon([Heff_B1, np.conj(V_L)],
-                  [[1, 2, -2], [1, 2, -1]])
-    H1 = ncon([Heff_X, np.conj(X)],
-              [[1, 2], [1, 2]])
-    print('H1 = ', H1)
-    Heff_B2 = np.exp(1j * p) * ncon([A_L, B, h2sites, np.conj(A_R)],
-                                      [[-1, 3, 1], [1, 4, 2], [3, 4, -2, 5], [2, 5, -3]])
-    Heff_X = ncon([Heff_B2, np.conj(V_L)],
-                  [[1, 2, -2], [1, 2, -1]])
-    H2 = ncon([Heff_X, np.conj(X)],
-              [[1, 2], [1, 2]])
-    print('H2 = ', H2)'''
-    # Heff_B[3] = ncon([A_L, B, h2sites, np.conj(A_L)],
-    #                  [[1, 3, 2], [2, 4, -3], [3, 4, 5, -2], [1, 5, -1]])
-    # Heff_B[4] = ncon([B, R_h],
-    #                  [[-1, -2, 1], [-3, 1]])
-    # exit()
     return omega
-
-def quasiparticle_typo(W, p, Ac, A_L, A_R, L_W, R_W):
-    '''Typo version of quasiparticle.'''
-    T_Wl = A_W_to_Tw(A_L, W)
-    W_r = W.transpose([1, 0, 2, 3])
-    T_Wr = A_W_to_Tw(A_R, W_r)
-    r_L, l_L = Tw_to_rl(T_Wl)
-    l_R, r_R = Tw_to_rl(T_Wr)
-    T_Wl *= np.exp(-1j * p)
-    T_Wr *= np.exp(1j * p)
-    D, d, _ = A_L.shape
-    A_tmp = A_L.reshape(D * d, D).T
-    V_L = linalg.null_space(A_tmp)
-    V_L = V_L.reshape(D, d, D*(d-1))
-    def map_effective_H(X):
-        X = X.reshape(D*(d-1),D)
-        B = ncon([V_L,X],
-                 [[-1,-2,1],[1,-3]])
-        LBWA_L = combine_LBWA_L(L_W, B, W, A_L)
-        RBWA_R = combine_RBWA_R(R_W, B, W, A_R)
-        L_B = quasi_sum_right_left_mpo(T_Wl, r_L, l_L, LBWA_L)
-        R_B = quasi_sum_right_left_mpo(T_Wr, l_R, r_R, RBWA_R)
-        term1 = np.exp(-1j*p)*ncon([L_B,Ac,W,R_W],
-                                    [[-1,1,2],[2,5,4],[1,3,5,-2],[-3,3,4]])
-        term2 = np.exp(1j*p)*ncon([L_W,Ac,W,R_B],
-                                  [[-1,1,2],[2,5,4],[1,3,5,-2],[-3,3,4]])
-        term3 = ncon([L_W,B,W,R_W],
-                     [[-1,1,2],[2,5,4],[1,3,5,-2],[-3,3,4]])
-        Teff_B = term1+term2+term3
-        Teff_X = ncon([Teff_B, np.conj(V_L)],
-                      [[1,2,-2],[1,2,-1]])
-        return Teff_X.reshape(-1)
-    omega, X = eigs(LinearOperator((D ** 2*(d-1), D ** 2*(d-1)), matvec=map_effective_H), k=10, which='SR', tol=1e-8)
-    # omega, X = eigsh(LinearOperator((D ** 2, D ** 2), matvec=map_effective_H), k=10, which='SA', tol=1e-4)
-    # print(omega)
-    return omega, X
 
 def domain_sum_right_left(T_R2L1,x):
     '''For domain part, we use regular inverse instead of pseudo inverse'''
@@ -978,8 +1010,9 @@ def domain_sum_right_left(T_R2L1,x):
     y = y.reshape(D,d_w,D)
     return y
 
-def quasiparticle_domain(W, p, A_L1, A_R2, L_W, R_W, num_of_excite):
+def quasiparticle_domain(W, p, A_L1, A_R2, L_W, R_W, num_of_excite=1):
     D, d, _ = A_L1.shape
+    d_w, _, _, _ = W.shape
     A_tmp = A_L1.reshape(D * d, D).T
     V_L = linalg.null_space(A_tmp)
     V_L = V_L.reshape(D, d, D * (d - 1))
@@ -1023,117 +1056,136 @@ Main Program
 '''
 
 if __name__ == '__main__':
-    D = 8;
+    D = 10;
     d = 2
+    A = np.random.rand(D, d, D)
+    lam, gamma = A_to_lam_gamma(A)
+    lam, gamma = lam_gamma_to_canonical(lam, gamma)
+    A_L, A_R = canonical_to_Al_Ar(lam, gamma)
+    C = lam
+    Ac = ncon([A_L, C],
+              [[-1, -2, 1], [1, -3]])
+    A_L2, A_R2 = min_Ac_C(Ac, C)
+    del_AL = linalg.norm(A_L - A_L2) / linalg.norm(A_L)
+    del_AR = linalg.norm(A_R - A_R2) / linalg.norm(A_R)
+    print(del_AL, del_AR)
+    exit()
+    sX, sY, sZ, sI = constants.get_spin_operators(d)
     model = 'TFIM'
     hz_field = 0.9
-    filename = 'omega_p_hz09test.txt'
-    print('We are solving ' + model + ' model!')
-    print('D = ', D)
-    A = np.random.rand(D, d, D)
-    L0 = np.random.randn(D, D)
-    R0 = np.random.randn(D, D)
-    sX = np.array([[0, 1], [1, 0]])
-    sY = np.array([[0, -1j], [1j, 0]])
-    sZ = np.array([[1, 0], [0, -1]])
-    sI = np.array([[1, 0], [0,1]])
-    sP = sX + 1j * sY
-    sM = sX - 1j * sY
-    # print(sP)
-    # exit()
-    if model == 'XX':
-        ## XX model
-        hloc = (np.real(np.kron(sX, sX) + np.kron(sY, sY))).reshape(2, 2, 2, 2)
-        d_w = 4
-        W = np.zeros([d_w, d_w, d, d], dtype=complex)
-        W[0, 0] = W[3, 3] = sI
-        W[1, 0] = W[3, 2] = sP/2**0.5
-        W[2, 0] = W[3, 1] = sM/2**0.5
-        # W[0, 0] = W[3, 3] = sI
-        # W[1, 0] = W[3, 1] = sX/np.sqrt(2)
-        # W[2, 0] = W[3, 2] = sY/np.sqrt(2)
-        Exact = -4/np.pi ## = -1.27...
-        # elem_ex = lambda k: 2*np.sqrt(2+2*np.cos(2*k))
-    elif model == 'TFIM':
-        ## TFIM
-        print('hz = ', hz_field)
-        hloc = (-np.kron(sX, sX) - (hz_field / 2) * (np.kron(sZ, sI) + np.kron(sI, sZ))).reshape(2, 2, 2, 2)
-        d_w = 3
-        W = np.zeros([d_w, d_w, d, d], dtype=complex)
-        W[0, 0] = W[2, 2] = sI
-        W[1, 0] = -sX;
-        W[2, 1] = sX
-        W[2, 0] = -hz_field * sZ
-
-        # W[0, 0] = W[2, 2] = sI
-        # W[1, 0] = -sZ;
-        # W[2, 1] = sZ
-        # W[2, 0] = -hz_field * sX
-        N = 1000000;
-        x = np.linspace(0, 2 * np.pi, N + 1)
-        y = np.sqrt((hz_field - 1) ** 2 + 4 * hz_field * np.sin(x / 2) ** 2)
-        Exact = -0.5 * sum(y[1:(N + 1)] + y[:N]) / N
-        # elem_ex = lambda k: np.sqrt(1 + hz_field ** 2 - 2 * hz_field * np.cos(k))
-    elif model == 'XXZ':
-        ## XXZ model
-        ## data of XXZ model
-        ## Ref: "Study of the ground state of the one-dimensionalHeisenberg spin-1 chain 2"; Author: K.R. de Ruiter
-        # delta        0.        0.25      0.50      0.75      1.
-        # E_infty/LJ  -0.318310 -0.345180 -0.375000 -0.407659 -0.443147
-        delta = 4.0
-        E_XXZ = {0.:-0.318310, 0.25: -0.345180, -0.50:-0.375000, 0.75:-0.407659, 1.:  -0.443147, 4.: -4.246}
-        print('delta = ', delta)
-        hloc = np.real(np.kron(sX, sX) +np.kron(sY,sY) +delta*np.kron(sZ,sZ)).reshape(2, 2, 2, 2)
-        d_w = 5
-        W = np.zeros([d_w, d_w, d, d], dtype=complex)
-        W[0, 0] = W[4, 4] = sI
-        W[1, 0] = W[4,1] = sX
-        W[2, 0] = W[4,2] = sY
-        W[3, 0] = sZ; W[4,3] = delta*sZ
-        # W = W
-        Exact = E_XXZ[delta]*4
+    Model = constants.Model(model, d, hz_field)
+    hloc, W, Exact = Model.get_h_W_E()
     print('Exact = ', Exact)
 
-    e_cal, A_L, A_R, Ac,C,L_h, R_h = vumps_2sites(hloc, A, eta=1e-6)
+    # filename = 'omega_p_hz09test.txt'
+    print('We are solving ' + model + ' model!')
+    aklt = constants.get_AKLT()
+    dim = aklt.shape[1]
+    W = ncon([aklt, np.conj(aklt)],
+             [[1, -1, -3, -5, -7], [1, -2, -4, -6, -8]])
+    d = dim**2
+    W = W.reshape(d, d, d, d)
+    W = W/1.30574397
+    '''rvb = constants.get_RVB()
+    dim = rvb.shape[-1]
+    d = dim**2
+    W = ncon([rvb, np.conj(rvb)],
+             [[1,2,3,-1, -3, -5, -7], [1,2,3, -2, -4, -6, -8]])
+    W = W.reshape(d, d, d, d)
+    print(rvb.shape)'''
+    print(W.shape)
     # exit()
-    # term3 = ncon([L_h, Ac],
-    #              [[-1, 1], [1, -2, -3]])
-    # test = ncon([np.conj(Ac),term3],
-    #             [[1,2,3],[1,2,3]])
-    # print(test)
-    # term4 = ncon([Ac, R_h],
-    #              [[-1, -2, 1], [-3, 1]])
-    # test = ncon([np.conj(Ac), term4],
-    #             [[1, 2, 3], [1, 2, 3]])
-    # print(test)
-    # exit()
-    # e = evaluate_energy_two_sites(A_L, A_R, Ac, hloc)
-    # print(e_cal)
-    # print(e)
-    # exit()
-    e_eye = e_cal * np.eye(d ** 2, d ** 2).reshape(d, d, d, d)
-    # e_eye = 1 * np.eye(d ** 2, d ** 2).reshape(d, d, d, d)
-    h_tilda = hloc - e_eye
-    '''p = 0.0
-    omega = quasiparticle_2sites(hloc, p, A_L, A_R, L_h, R_h)
-    print(omega[0])
-    # exit()
-    omega = quasiparticle_2sites(h_tilda, p, A_L, A_R, L_h, R_h)
-    print(omega[0])
-    exit()
-    h_tilda -= e_eye
-    omega = quasiparticle_2sites(h_tilda, p, A_L, A_R, L_h, R_h)
-    print(omega[0])
-    h_tilda -= e_eye
-    omega = quasiparticle_2sites(h_tilda, p, A_L, A_R, L_h, R_h)
-    print(omega[0])
-    exit()'''
+    print('D = ', D)
 
-    # exit()
+    # d_w = 3
+    # W = np.random.rand(d_w, d_w, d, d)
+    lam1, Ac, C, A_L, A_R, L_W, R_W = vumps_fixed_points(W, A, eta=1e-5)
+    print(lam1)
+    # filename = 'akltD15.txt'
+    # filename = 'rvbD8.txt'
+    num_of_p = 10
+    num_of_excite = 5
+    '''p = 0
+    omega, _ = quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite=5, system_dim='2D')
+    print(omega)
+    print(-np.log(sorted(abs(omega / lam1))))
+    omega, _ = quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite=5, system_dim='2D')
+    print(omega)
+    print(-np.log(sorted(abs(omega / lam1))))
+    omega, _ = quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite=5, system_dim='2D')
+    print(omega)
+    print(-np.log(sorted(abs(omega / lam1))))
+    exit()
+    with open(filename, 'w') as f:
+        f.write('# omega \t p \n')
+        f.write('# rvb \n')
+    for p in np.linspace(np.pi*0.0, np.pi/2, num_of_p):
+        print('p = ', p)
+        omega, _ = quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite=num_of_excite, system_dim='2D')
+        min_ln = list(-np.log(abs(omega / lam1)))
+        min_ln.sort()
+        f = open(filename, 'a')
+        message = ('{:.3f}, ' + '{:.5f}, '*(num_of_excite-1)+ '{:.5f}').format(p, *min_ln)
+        print(message)
+        f.write(message)
+        f.write('\n')
+        f.close()
+    exit()
+    '''
+
+    with open(filename, 'w') as f:
+        f.write('# omega \t p \n')
+        f.write('# aklt \n')
+    for p in np.linspace(np.pi*0.0, np.pi, num_of_p):
+        print('p = ', p)
+        omega, _ = quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite=num_of_excite, system='2D')
+        omega = omega.real
+        omega_kx_0 = list(omega[omega>0])
+        omega_kx_pi = list(omega[omega<0])
+        print('omega_kx_0 = ', omega_kx_0)
+        print('omega_kx_pi = ', omega_kx_pi)
+        lam1 = abs(lam1)
+        min_ln_0 = list(-np.log(abs(omega_kx_0 / lam1)))
+        min_ln_0.sort()
+        print('min_ln_0 = ', min_ln_0)
+        min_ln_pi = list(-np.log(abs(omega_kx_pi / lam1)))
+        min_ln_pi.sort()
+        print('min_ln_pi = ', min_ln_pi)
+
+
+
+        f = open(filename, 'a')
+        message = ('{:.3f}, ' + '{:.5f}, '*(len(min_ln_0)-1)+ '{:.5f}').format(p, *min_ln_0)
+        print(message)
+        f.write(message)
+        f.write('\n')
+        message = ('{:.3f}, ' + '{:.5f}, ' * (len(min_ln_pi) - 1) + '{:.5f}').format(p, *min_ln_pi)
+        print(message)
+        f.write(message)
+        f.write('\n')
+        f.close()
+    exit()
+    omega, _ = quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite=5, system='2D')
+    print(omega)
+    print(-np.log(abs(omega/lam1)))
+    omega, _ = quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite=5, system='2D')
+    print(omega)
+    omega, _ = quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite=5, system='2D')
+    print(omega)
+
+    exit()
+
+
+
+    e_cal, A_L, A_R, Ac,C,L_h, R_h = vumps_2sites(hloc, A, eta=1e-6)
+    e_eye = e_cal * np.eye(d ** 2, d ** 2).reshape(d, d, d, d)
+    h_tilda = hloc - e_eye
+
+    exit()
     p_xaxis_ = []
     omega_triv = []
     # omega_nontriv = []
-    num_of_p = 15
+    num_of_p = 5
     num_of_excite = 5
     with open(filename, 'w') as f:
         f.write('# omega \t p \n')
@@ -1141,7 +1193,7 @@ if __name__ == '__main__':
     for p in np.linspace(np.pi*0.0, np.pi*1.0, num_of_p):
         print('p = ', p)
         omega = quasiparticle_2sites(h_tilda, p, A_L, A_R, L_h, R_h, num_of_excite)
-
+        omega += e_cal.real
         omega_triv.append(omega.real)
         f = open(filename, 'a')
         message = ('{:.3f}, ' + '{:.5f}, '*4+ '{:.5f}').format(p, *omega.real)
@@ -1154,37 +1206,20 @@ if __name__ == '__main__':
         # print('omega[0] = ', omega[0].real - e_cal.real)
         # omega_triv.append(omega.real - e_cal.real)
         # omega_yaxis.append(omega.real)
-
         # print('omega-e_cal (trivial)= ', omega - e_cal)
         p_xaxis_.append([p] * num_of_excite)
-    # elem_ex = lambda k: np.sqrt(1 + hz_field ** 2 - 2 * hz_field * np.cos(k))
-    '''omega_triv = np.array(omega_triv).ravel()
-    p_xaxis_ = np.array(p_xaxis_).ravel()
-    plt.plot(p_xaxis_, omega_triv, 'bo', label='trivial')
-    p = np.linspace(0, np.pi, num=100)
-    plt.plot(p, 2*elem_ex(p), 'c-', label='exact')
-    plt.title('TFIM Excitation (2sites):' + ' hz = ' + str(hz_field))
-    # plt.title('XXZ Excitation:' + ' delta = ' + str(delta))
-    plt.xlabel('Momentum p')
-    plt.ylabel('dE')
-    plt.grid()
-    plt.legend()
-    plt.show()'''
-    # exit()
 
     e_cal, Ac, C, A_L, A_R, L_W, R_W = vumps_mpo(W,A, eta=1e-8)
-    # exit()
     A_L1 = A_L
     A_R2 = ncon([A_R, sZ],
                 [[-1, 1, -3], [1, -2]])
-    # p = np.pi * 5 / 10
     # p = 0.0
     # omega, X = quasiparticle_correct(W, p, A_L, A_R, L_W, R_W)
     # print(omega)
     p_xaxis_ = []
     omega_triv = []
     omega_nontriv = []
-    num_of_p = 15
+    num_of_p = 5
     num_of_excite = 5
     f = open(filename, 'a')
     f.write('# mpo \n')
@@ -1193,6 +1228,7 @@ if __name__ == '__main__':
         print('p = ', p)
         omega, X = quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite)
         f = open(filename, 'a')
+        omega -= e_cal.real
         message = ('{:.3f}, ' + '{:.5f}, '*4+ '{:.5f}').format(p, *omega.real)
         print(message)
         f.write(message)
