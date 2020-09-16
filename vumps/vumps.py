@@ -1,4 +1,5 @@
 import constants
+import pinv_manual
 from ncon import ncon
 import numpy as np
 from scipy import linalg
@@ -7,7 +8,6 @@ from scipy.sparse.linalg import eigsh
 from scipy.sparse.linalg import LinearOperator
 from scipy.sparse.linalg import bicgstab
 # from scipy.sparse.linalg import bicg
-
 import matplotlib.pyplot as plt
 import copy
 
@@ -290,35 +290,6 @@ def min_Ac_C(Ac, C):
     return al_tilda, ar_tilda'''
     return A_L, A_R
 
-'''
-#################################################
-Part 3 (most FREQUENTLY used algorithm)
-Sum infinite transfer matrix
-Constuct T_R/T_L using A_R/A_L,
-then solve y_R from (1-T_R)^inv @ x_R = y_R
-Ref: PRB 97, 045145 (2018) Appendix D
-#################################################
-'''
-def sum_right_left(x, A_R, C, tol=1e-8):
-    def map_y(y_R): ## eqn(D13) in PRB 97, 045145 (2018)
-        y_R = y_R.reshape(D,D)
-        term1 = y_R
-        term2 = ncon([y_R,A_R,np.conj(A_R)],
-                     [[3,1],[1,2,-2],[3,2,-1]])
-        term3 = ncon([y_R,L],
-                     [[1,2],[1,2]])*np.eye(D,D)
-        return (term1-term2+term3).reshape(-1)
-    D,d,_ = A_R.shape
-    L = ncon([np.conj(C), C],
-             [[1,-1],[1,-2]]) # = C@np.conj(C.T)
-    x_tilda = x - ncon([x,L],
-                       [[1,2],[1,2]])
-    y_R, info = bicgstab(LinearOperator((D ** 2, D ** 2), matvec=map_y), x_tilda.reshape(-1),x0=x_tilda.reshape(-1), tol=tol)
-    y_R = y_R.reshape(D,D)
-    if info != 0:
-        print('bicgstab did not converge')
-        exit()
-    return y_R
 
 '''
 ########################################################################################################################
@@ -361,6 +332,10 @@ def Ar_h_to_h_R(A_R, h): ## eqn(133) in arXiv:1810.07006v3
                [[2,3,-2],[1,4,2],[3,4,5,6],[7,5,-1],[1,6,7]])
     return h_R
 
+def A_to_Tm(A_L):
+    T_L = ncon([A_L, np.conj(A_L)],
+               [[-4,1,-2], [-3,1,-1]])
+    return T_L
 
 '''
 ############################################################
@@ -369,7 +344,7 @@ This function will largely use the previos defined functions
 Ref: Algorithm 4 in arXiv:1810.07006v3
 ############################################################
 '''
-def vumps_2sites(h, A, eta=1e-7):
+def vumps_2sites(h, A, eta=1e-7, pinv = 'scipy'):
     print('>' * 100)
     print('VUMPS for two sites begin!')
     def map_Hac(Ac): ## eqn(131) in arXiv:1810.07006v3
@@ -410,11 +385,24 @@ def vumps_2sites(h, A, eta=1e-7):
         h_tilda = h - e_eye
         # h_tilda = h
         h_L = Al_h_to_hL(A_L, h_tilda)
-        # L_h = sum_left(h_L, A_L, C,tol=delta/10)
-        C_r = C.T
-        L_h = sum_right_left(h_L, A_L, C_r, tol=delta / 10)
         h_R = Ar_h_to_h_R(A_R, h_tilda)
-        R_h = sum_right_left(h_R, A_R, C, tol=delta / 10)
+        if pinv == 'scipy':
+            T_L = A_to_Tm(A_L)
+            T_R = A_to_Tm(A_R)
+            mat_TL = T_L.reshape(D**2,D**2)
+            mat_TR = T_R.reshape(D**2,D**2)
+            mat_eye = np.eye(D**2,D**2)
+            inv_TL = linalg.pinv(mat_eye-mat_TL).reshape(D,D,D,D)
+            inv_TR = linalg.pinv(mat_eye-mat_TR).reshape(D,D,D,D)
+            L_h = ncon([inv_TL, h_L],
+                       [[-1,-2,1,2], [1,2]])
+            R_h = ncon([inv_TR, h_R],
+                       [[-1,-2,1,2], [1,2]])
+        # L_h = sum_left(h_L, A_L, C,tol=delta/10)
+        else:
+            C_r = C.T
+            L_h = pinv_manual.sum_right_left(h_L, A_L, C_r, tol=delta / 10)
+            R_h = pinv_manual.sum_right_left(h_R, A_R, C, tol=delta / 10)
         # print('linalg.norm(R_h-R_h.T)', linalg.norm(R_h-np.conj(R_h.T)))
         # print('R_h = ', R_h)
         # exit()
@@ -480,7 +468,7 @@ def get_Lh_Rh_mpo(A_L, A_R, C,W):
     # print('e_test_Lw = ', e_test_Lw)
     e_Lw_eye = e_Lw*np.eye(D,D)
     L_W[0] -= e_Lw_eye
-    L_W[0] = sum_right_left(L_W[0], A_L, C_r)
+    L_W[0] = pinv_manual.sum_right_left(L_W[0], A_L, C_r)
 
     L_W = L_W.transpose([1,0,2])
     R_W = np.zeros([d_w, D,D], dtype=complex)
@@ -498,7 +486,7 @@ def get_Lh_Rh_mpo(A_L, A_R, C,W):
     e_Rw_eye = e_Rw * np.eye(D, D)
     # print('e_test_Rw = ', e_test_Rw)
     R_W[d_w - 1] -= e_Rw_eye
-    R_W[d_w-1] = sum_right_left(R_W[d_w-1], A_R, C)
+    R_W[d_w-1] = pinv_manual.sum_right_left(R_W[d_w-1], A_R, C)
 
     R_W = R_W.transpose([1,0,2])
     # print(e_Rw, e_Lw)
@@ -661,8 +649,6 @@ def vumps_fixed_points(W,A,eta=1e-8):
 Excitation Part
 ########################################################################################################################
 '''
-
-
 def get_T_RLw_or_T_LRw(A_R, W, A_L):
     '''Thie is ued in [quasiparticle_correct], which should be the correct transfer
     matrix to be used'''
@@ -674,125 +660,6 @@ def get_T_RL_or_T_LR(A_R,A_L):
     T_RL = ncon([A_R, np.conj(A_L)],
                 [[-2,1,-4],[-3,1,-1]])
     return T_RL
-def Tw_to_rl(T_W):
-    '''
-    :param T_W: transder matrix with MPO
-    :return: left and right dominant eigenvectors of T_W
-    Note: If T_W = T_Wr, then l<->r
-    '''
-    # print('doing get_rl')
-    def map_r(r):
-        '''If T_W = T_Wr, then it is map_l, for <l|T_Wr = <l|'''
-        r = r.reshape(D,d_w,D)
-        r_out = ncon([r, T_W],
-                     [[1,2,3], [1,2,3,-1,-2,-3]])
-        return r_out.reshape(-1)
-    def map_l(l):
-        '''If T_W = T_Wr, then it is map_r, for T_Wr|r> = |r>'''
-        l = l.reshape(D,d_w,D)
-        l_out = ncon([T_W,l],
-                     [[-1,-2,-3,1,2,3], [1,2,3]])
-        return l_out.reshape(-1)
-    D,d_w = T_W.shape[0], T_W.shape[1]
-    l_val, l = eigs(LinearOperator((D**2*d_w, D**2*d_w), matvec=map_l), k=1, which='LM')
-    l = l.reshape(D,d_w,D)
-    r_val, r = eigs(LinearOperator((D**2*d_w, D**2*d_w), matvec=map_r), k=1, which='LM')
-    r = r.reshape(D,d_w,D)
-    # print('norm(l_val) = ', linalg.norm(l_val), 'norm(r_val) = ', linalg.norm(r_val))
-    # print(l_val, r_val)
-    # exit()
-    return r, l
-
-def T_to_rl(T_RL):
-    '''
-    :param T_RL: transder matrix with A_R up A_L down
-    :return: left and right dominant eigenvectors of T_W
-    Note: If T = T_LR, then l<->r
-    '''
-    # print('doing get_rl')
-    def map_r(r):
-        '''If T = T_LR, then it is map_l, for <l|T_LR = <l|'''
-        r = r.reshape(D,D)
-        r_out = ncon([r, T_RL],
-                     [[1,2],[1,2,-1,-2]])
-        return r_out.reshape(-1)
-    def map_l(l):
-        '''If T_W = T_Wr, then it is map_r, for T_Wr|r> = |r>'''
-        l = l.reshape(D,D)
-        l_out = ncon([T_RL, l],
-                     [[-1,-2,1,2], [1,2]])
-        return l_out.reshape(-1)
-    D = T_RL.shape[0]
-    l_val, l = eigs(LinearOperator((D**2, D**2), matvec=map_l), k=1, which='LM')
-    l = l.reshape(D,D)
-    r_val, r = eigs(LinearOperator((D**2, D**2), matvec=map_r), k=1, which='LM')
-    r = r.reshape(D,D)
-    # print('norm(l_val) = ', linalg.norm(l_val), 'norm(r_val) = ', linalg.norm(r_val))
-    # print(l_val, r_val)
-    # exit()
-    return r, l
-
-def quasi_sum_right_left_mpo(T_W, r, l, x):
-    '''
-    Use (1-T_W)|y> = |x> with pseudo inverse to solve y
-    :param T_W: transder matrix with MPO
-    :param r: right dominant vector (If T_W = T_Wr, then it is l)
-    :param l: left dominant vector (If T_W = T_Wr, then it is r)
-    :param x: tensor on which infinite sum we want to apply
-    :return: y
-    '''
-    # print('doing quasi_sum_right_left')
-    def trans_map(y):
-        y = y.reshape(D,d_w,D)
-        term1 = y
-        term2 = ncon([T_W, y],
-                     [[-1,-2,-3,1,2,3], [1,2,3]])
-        term3 = ncon([r,y],
-                     [[1,2,3], [1,2,3]])*l
-        y_out = term1 + term2 + term3
-        return y_out.reshape(-1)
-    D,d_w,_ = x.shape
-    x_tilda = x - ncon([x,r],[[1,2,3],[1,2,3]])*l
-    y, info = bicgstab(LinearOperator((D**2*d_w, D**2*d_w), matvec=trans_map), x_tilda.reshape(-1),
-                       x0=x_tilda.reshape(-1))
-    # y, info = bicg(LinearOperator((D ** 2 * d_w, D ** 2 * d_w), matvec=trans_map), x_tilda.reshape(-1),
-    #                    x0=x_tilda.reshape(-1))
-    y = y.reshape(D,d_w,D)
-    if info != 0:
-        print('bicgstab did not converge!')
-        exit()
-    return y
-
-def quasi_sum_right_left_2sites(T_RL, r, l, x):
-    '''
-    Use (1-T_W)|y> = |x> with pseudo inverse to solve y
-    :param T_RL: transder matrix with A_R up A_L down
-    :param r: right dominant vector (If T = T_LR, then it is l)
-    :param l: left dominant vector (If T = T_LR, then it is r)
-    :param x: tensor on which infinite sum we want to apply
-    :return: y
-    '''
-    # print('doing quasi_sum_right_left')
-    def trans_map(y):
-        y = y.reshape(D,D)
-        term1 = y
-        term2 = ncon([T_RL, y],
-                     [[-1,-2,1,2], [1,2]])
-        term3 = ncon([r,y],
-                     [[1,2], [1,2]])*l
-        y_out = term1 + term2 + term3
-        return y_out.reshape(-1)
-    D,_ = x.shape
-    x_tilda = x - ncon([x,r],[[1,2],[1,2]])*l
-    y, info = bicgstab(LinearOperator((D**2, D**2), matvec=trans_map), x_tilda.reshape(-1),
-                       x0=x_tilda.reshape(-1))
-    # y, info = bicg(LinearOperator((D ** 2 * d_w, D ** 2 * d_w), matvec=trans_map), x_tilda.reshape(-1),
-    #                    x0=x_tilda.reshape(-1))
-    y = y.reshape(D,D)
-    if info != 0:
-        print('bicgstab did not converge!')
-        exit()
-    return y
 
 def combine_LBWA_L(L_W, B, W, A_L):
     LBWA_L = ncon([L_W, B, W, np.conj(A_L)],
@@ -804,7 +671,7 @@ def combine_RBWA_R(R_W, B, W, A_R):
                   [[1,2,3],[-3,5,3],[-2,2,5,4],[1,4,-1]])
     return RBWA_R
 
-def quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite=1, system ='1D'):
+def quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite=1, system ='1D', pinv = 'scipy'):
     '''
     Corrected version of quasiparticle.
     :param W: MPO
@@ -816,14 +683,30 @@ def quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite=1, system ='1D'):
     :return: omega and X
     '''
     T_RL = get_T_RLw_or_T_LRw(A_R, W, A_L)
+    D,dw = T_RL.shape[0], T_RL.shape[1]
+
+    # test = inv_T_RL@(mat_eye-mat_T_RL)
+    # print(np.around(test))
+    # exit()
     W_r = W.transpose([1, 0, 2, 3])
     T_LR = get_T_RLw_or_T_LRw(A_L, W_r, A_R)
+
     # T_RL *= np.exp(-1j * p)
     # T_LR *= np.exp(1j * p)
-    r_L, l_L = Tw_to_rl(T_RL)
-    l_R, r_R = Tw_to_rl(T_LR)
-    T_RL *= np.exp(-1j * p)
-    T_LR *= np.exp(1j * p)
+    if pinv == 'scipy':
+        mat_T_RL = T_RL.reshape(D ** 2 * dw, -1) * np.exp(-1j * p)
+        mat_eye = np.eye(D ** 2 * dw, D ** 2 * dw)
+        # print(mat_T_RL.shape)
+        inv_T_RL = linalg.pinv(mat_eye - mat_T_RL).reshape([D, dw, D] * 2)
+        mat_T_LR = T_LR.reshape(D ** 2 * dw, -1) * np.exp(1j * p)
+        # print(mat_T_RL.shape)
+        inv_T_LR = linalg.pinv(mat_eye - mat_T_LR).reshape([D, dw, D] * 2)
+        print('hello')
+    else:
+        r_L, l_L = pinv_manual.Tw_to_rl(T_RL)
+        l_R, r_R = pinv_manual.Tw_to_rl(T_LR)
+        T_RL *= np.exp(-1j * p)
+        T_LR *= np.exp(1j * p)
     D, d, _ = A_L.shape
     A_tmp = A_L.reshape(D * d, D).T
     V_L = linalg.null_space(A_tmp)
@@ -834,8 +717,14 @@ def quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite=1, system ='1D'):
                  [[-1,-2,1],[1,-3]])
         LBWA_L = combine_LBWA_L(L_W, B, W, A_L)
         RBWA_R = combine_RBWA_R(R_W, B, W, A_R)
-        L_B = quasi_sum_right_left_mpo(T_RL, r_L, l_L, LBWA_L)
-        R_B = quasi_sum_right_left_mpo(T_LR, l_R, r_R, RBWA_R)
+        if pinv == 'scipy':
+            L_B = ncon([inv_T_RL, LBWA_L],
+                       [[-1,-2,-3,1,2,3], [1,2,3]])
+            R_B = ncon([inv_T_LR, RBWA_R],
+                       [[-1,-2,-3,1,2,3], [1,2,3]])
+        else:
+            L_B = pinv_manual.quasi_sum_right_left_mpo(T_RL, r_L, l_L, LBWA_L)
+            R_B = pinv_manual.quasi_sum_right_left_mpo(T_LR, l_R, r_R, RBWA_R)
         term1 = np.exp(-1j*p)*ncon([L_B,A_R,W,R_W],
                                     [[-1,1,2],[4,5,2],[1,3,5,-2],[-3,3,4]])
         term2 = np.exp(1j*p)*ncon([L_W,A_L,W,R_B],
@@ -859,9 +748,9 @@ def quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite=1, system ='1D'):
                           which='SA', tol=1e-6)
         # print('omega2 = ', omega2)
         omega = np.hstack((omega1, omega2))
-    elif system == 'RVB':
-        omega, X = eigs(LinearOperator((D ** 2 * (d - 1), D ** 2 * (d - 1)), matvec=map_effective_H), k=num_of_excite, which='LM',
-                        tol=1e-6)
+    elif system == '2D':
+        omega, X = eigs(LinearOperator((D ** 2 * (d - 1), D ** 2 * (d - 1)), matvec=map_effective_H), k=num_of_excite,
+                        which='LM', tol=1e-6)
     X = X[:,0].reshape(D*(d-1),D)
     B = ncon([V_L, X],
              [[-1, -2, 1], [1, -3]])
@@ -878,8 +767,8 @@ def quasiparticle_mpo(W, p, A_L, A_R, L_W, R_W, num_of_excite=1, system ='1D'):
 def quasiparticle_2sites(h2sites, p, A_L, A_R, L_h, R_h, num_of_excite=5):
     T_RL = get_T_RL_or_T_LR(A_R,A_L)
     T_LR = get_T_RL_or_T_LR(A_L,A_R)
-    r_L, l_L = T_to_rl(T_RL)
-    l_R, r_R = T_to_rl(T_LR)
+    r_L, l_L = pinv_manual.T_to_rl(T_RL)
+    l_R, r_R = pinv_manual.T_to_rl(T_LR)
     T_RL *= np.exp(-1j * p)
     T_LR *= np.exp(1j * p)
     D, d, _ = A_L.shape
@@ -897,12 +786,12 @@ def quasiparticle_2sites(h2sites, p, A_L, A_R, L_h, R_h, num_of_excite=5):
                     [[1,2,-2],[1,2,-1]])
         R_Bx = ncon([B,np.conj(A_R)],
                     [[-2,2,1],[1,2,-1]])
-        L_B = quasi_sum_right_left_2sites(T_RL,r_L,l_L, L_Bx)
+        L_B = pinv_manual.quasi_sum_right_left_2sites(T_RL,r_L,l_L, L_Bx)
         # print(linalg.norm(L_B))
         # print('L_B = ', L_B)
         # print(R_Bx)
         # exit()
-        R_B = quasi_sum_right_left_2sites(T_LR,l_R,r_R,R_Bx)
+        R_B = pinv_manual.quasi_sum_right_left_2sites(T_LR,l_R,r_R,R_Bx)
         # print('R_Bx = ', R_Bx)
         # exit()
 
@@ -915,7 +804,7 @@ def quasiparticle_2sites(h2sites, p, A_L, A_R, L_h, R_h, num_of_excite=5):
         L1x[3] = np.exp(-2j*p)*ncon([L_B, A_R, A_R, h2sites, np.conj(A_L), np.conj(A_L)],
                                     [[1,2],[3,4,2],[-2,5,3],[4,5,6,7],[1,6,8],[8,7,-1]])
         L1x_sum = sum(L1x)
-        L1 = quasi_sum_right_left_2sites(T_RL, r_L, l_L, L1x_sum)
+        L1 = pinv_manual.quasi_sum_right_left_2sites(T_RL, r_L, l_L, L1x_sum)
 
         R1x[0] = ncon([B,R_h,np.conj(A_R)],
                        [[-2,3,2],[1,2],[1,3,-1]])
@@ -926,7 +815,7 @@ def quasiparticle_2sites(h2sites, p, A_L, A_R, L_h, R_h, num_of_excite=5):
         R1x[3] = np.exp(2j*p)*ncon([A_L, A_L, h2sites, np.conj(A_R), np.conj(A_R), R_B],
                                    [[-2,2,1],[1,3,6],[2,3,4,5],[8,4,-1],[7,5,8],[7,6]])
         R1x_sum = sum(R1x)
-        R1 = quasi_sum_right_left_2sites(T_LR,l_R,r_R,R1x_sum)
+        R1 = pinv_manual.quasi_sum_right_left_2sites(T_LR,l_R,r_R,R1x_sum)
         # Heff_B = [None]*14
         Heff_B[0] = ncon([B, A_R, h2sites, np.conj(A_R)],
                          [[-1,3,1],[2,4,1],[3,4,-2,5],[2,5,-3]])
@@ -965,30 +854,21 @@ def quasiparticle_2sites(h2sites, p, A_L, A_R, L_h, R_h, num_of_excite=5):
     X = X[:,0]
     _ = map_effective_H(X)
     X = X.reshape(D * (d - 1), D)
-    B = ncon([V_L, X],
-             [[-1, -2, 1], [1, -3]])
-    test = ncon([l_R,B,np.conj(A_R)],
-                [[2,1],[1,3,4],[4,3,2]])
-    print(test)
-    # exit()
+
     L1x_test = sum(L1x)
-    test = ncon([L1x_test, r_L],
-                [[1, 2], [1, 2]])
-    print(test)
+
+
     R1x_test = sum(R1x)
-    test = ncon([R1x_test, l_R],
-                [[1, 2], [1, 2]])
-    print('R1x_test = ',test)
-    # exit()
+
     H = [None]*14
     for i in range(len(H)):
         Heff_X = ncon([Heff_B[i], np.conj(V_L)],
                       [[1, 2, -2], [1, 2, -1]])
         H[i] = ncon([Heff_X, np.conj(X)],
                     [[1,2],[1,2]])
-        if abs(H[i]) > 1e-8:
-            print('H_%d = '%i, H[i])
-        else: print('H_%d = '%i, 0)
+        # if abs(H[i]) > 1e-8:
+            # print('H_%d = '%i, H[i])
+        # else: print('H_%d = '%i, 0)
     print('sum(H) = ', sum(H))
     return omega
 
@@ -1044,10 +924,12 @@ def quasiparticle_domain(W, p, A_L1, A_R2, L_W, R_W, num_of_excite=1):
         Teff_X = ncon([Teff_B, np.conj(V_L)],
                       [[1,2,-2],[1,2,-1]])
         return Teff_X.reshape(-1)
-    omega, X = eigsh(LinearOperator((D ** 2 * (d - 1), D ** 2 * (d - 1)), matvec=map_effective_H), k=num_of_excite, which='SA',
-                     tol=1e-8)
+    # omega, X = eigsh(LinearOperator((D ** 2 * (d - 1), D ** 2 * (d - 1)), matvec=map_effective_H), k=num_of_excite, which='SA',
+    #                  tol=1e-8)
     # omega, X = eigs(LinearOperator((D ** 2 * (d - 1), D ** 2 * (d - 1)), matvec=map_effective_H), k=10, which='SR',
     #                 tol=1e-6)
+    omega, X = eigs(LinearOperator((D ** 2 * (d - 1), D ** 2 * (d - 1)), matvec=map_effective_H), k=num_of_excite,
+                    which='LM', tol=1e-6)
     return omega
 '''
 ########################################################################################################################
